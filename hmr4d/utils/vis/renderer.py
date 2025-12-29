@@ -207,6 +207,38 @@ class Renderer:
         self.cameras = self.create_camera()
         self.create_renderer()
 
+    def project_points_to_full_image(self, points3d, cameras=None, world_space=False):
+        if points3d.dim() == 2:
+            points3d = points3d.unsqueeze(0)  # (1, J, 3)
+
+        pts3d = points3d.to(self.device)
+        cameras = self.cameras if cameras == None else cameras
+        # PyTorch3D screen projection for current (cropped) camera/image_size
+        # Output is in the cropped image coordinate system.
+        pts_screen = cameras.transform_points_screen(
+            pts3d, image_size=self.image_sizes
+        )[..., :2]  # (N, J, 2)
+
+        if world_space:
+            pts_full = pts_screen
+        else:
+            # Match your render flip: torch.flip(image, [1, 2]) flips both y and x axes.
+            pts_screen_flipped = pts_screen.clone()
+            pts_screen_flipped[..., 0] = (self.width - 1) - pts_screen_flipped[..., 0]  # x
+            pts_screen_flipped[..., 1] = (self.height - 1) - pts_screen_flipped[..., 1]  # y
+
+            # Convert from cropped coords -> full-image coords by adding bbox top-left offset
+            bbox = self.bboxes[0].int().to(self.device)  # (left, top, right, bottom)
+            left, top = bbox[0], bbox[1]
+            pts_full = pts_screen_flipped + torch.tensor([[[left, top]]], device=self.device)
+
+        # Basic validity mask (optional but useful)
+        z = cameras.transform_points(pts3d)[..., 2]  # camera-space z
+        valid = (z > 1e-6)
+        valid = valid & (pts_screen[..., 0] >= 0) & (pts_screen[..., 0] < self.width) & (pts_screen[..., 1] >= 0) & (pts_screen[..., 1] < self.height)
+
+        return pts_full.detach().cpu(), valid.detach().cpu().to(dtype=torch.float32)
+
     def render_mesh(self, vertices, background=None, colors=[0.8, 0.8, 0.8], VI=50):
         self.update_bbox(vertices[::VI], scale=1.2)
         vertices = vertices.unsqueeze(0)
@@ -241,7 +273,7 @@ class Renderer:
         self.reset_bbox()
         return image
 
-    def render_with_ground(self, verts, colors, cameras, lights, faces=None):
+    def render_with_ground(self, verts, colors, cameras=None, lights=None, faces=None):
         """
         :param verts (N, V, 3), potential multiple people
         :param colors (N, 3) or (N, V, 3)
@@ -269,6 +301,8 @@ class Renderer:
 
         materials = Materials(device=self.device, shininess=0)
 
+        cameras = self.cameras if cameras == None else cameras
+        lights = self.lights if lights == None else lights
         results = self.renderer(mesh, cameras=cameras, lights=lights, materials=materials)
         image = (results[0, ..., :3].cpu().numpy() * 255).astype(np.uint8)
 

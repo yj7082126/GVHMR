@@ -19,9 +19,9 @@ ipdb
 setuptools>=68.0
 black
 tensorboardX
-opencv-python
+opencv-contrib-python==4.8.1.78
 ffmpeg-python
-scikit-image
+scikit-image==0.23.0
 termcolor
 einops
 imageio==2.34.1
@@ -33,7 +33,7 @@ joblib
 # transformers==4.31.0
 
 # 3D-Vision
-pytorch3d @ https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/pytorch3d-0.7.6-cp310-cp310-linux_x86_64.whl
+# pytorch3d @ https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/pytorch3d-0.7.8-cp310-cp310-linux_x86_64.whl
 trimesh
 chumpy
 smplx

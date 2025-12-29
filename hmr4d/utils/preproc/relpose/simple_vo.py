@@ -8,16 +8,17 @@ from hmr4d.utils.video_io_utils import get_video_lwh, read_video_np
 
 
 class SimpleVO:
-    def __init__(self, video_path, scale=0.5, step=8, method="sift", f_mm=None):
+    def __init__(self, video_path, scale=0.5, step=8, method="sift", f_mm=None, rotate=0):
         self.video_path = video_path
         self.scale = scale
         self.step = step
         self.method = method
         self.f_mm = 24 if f_mm is None else f_mm  # fullframe camera focal length in mm
+        self.rotate = rotate
 
     def compute(self):
         # Read video
-        frames = read_video_np(self.video_path, scale=self.scale)
+        frames = read_video_np(self.video_path, scale=self.scale, rotate=self.rotate)
 
         # Downsample frames, and interpolate missing frames
         F_all = frames.shape[0]

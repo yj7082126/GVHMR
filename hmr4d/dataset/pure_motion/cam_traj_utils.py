@@ -188,9 +188,10 @@ class CameraAugmentorV11:
     height_min = -2.0  # -1.5 -> -2.0 allow look upside
     tz_post_min = 0.5
 
-    def __init__(self):
-        self.w = 1000
-        self.f = create_camera_sensor(1000, 1000, 24)[2][0, 0]  # use 24mm camera
+    def __init__(self, w=1000, h=1000, f_fullframe=24):
+        self.w = w
+        self.h = h
+        self.f = create_camera_sensor(self.w, self.h, f_fullframe)[2][0, 0]  # use 24mm camera
         self.half_fov_tol = (self.w / 2) / self.f
 
     def create_rotation_track(self, cam_mat, root, rx_factor=1.0, ry_factor=1.0, rz_factor=1.0):

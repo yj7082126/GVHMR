@@ -13,7 +13,7 @@ def get_video_lwh(video_path):
     return L, W, H
 
 
-def read_video_np(video_path, start_frame=0, end_frame=-1, scale=1.0):
+def read_video_np(video_path, start_frame=0, end_frame=-1, scale=1.0, rotate=0):
     """
     Args:
         video_path: str
@@ -40,6 +40,9 @@ def read_video_np(video_path, start_frame=0, end_frame=-1, scale=1.0):
     frames = iio.imread(video_path, plugin="pyav", filter_sequence=filter_args)
     if should_check_length:
         assert len(frames) == end_frame - start_frame
+
+    if rotate != 0:
+        frames = np.rot90(frames, k=rotate, axes=(1, 2))
 
     return frames
 

@@ -177,3 +177,7 @@ tensorboard
 
 # glove
 glove
+
+# datasets
+datasets/
+samples/

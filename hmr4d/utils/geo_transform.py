@@ -575,6 +575,14 @@ def compute_cam_angvel(R_w2c, padding_last=True):
     cam_angvel = torch.cat([cam_angvel, cam_angvel[-1:]], dim=0)  # (F, 6)
     return cam_angvel.float()
 
+def compute_cam_tvel(t_w2c, padding_last=True):
+    """
+    t_w2c : (F, 3)
+    """
+    cam_tvel = t_w2c[1:] - t_w2c[:-1]
+    assert padding_last
+    cam_tvel = torch.cat([cam_tvel, cam_tvel[-1:]], dim=0)  # (F, 3)
+    return cam_tvel.float()
 
 def ransac_gravity_vec(xyz, num_iterations=100, threshold=0.05, verbose=False):
     # xyz: (L, 3)
@@ -671,3 +679,17 @@ def ransac_vec(vel, min_multiply=20, verbose=False):
         print(inner_mask[ind].sum().item())
 
     return result, inner_mask[ind]
+
+def move_to_start_point_face_z(verts, J_regressor):
+    "XZ to origin, Start from the ground, Face-Z"
+    # position
+    verts = verts.clone()  # (L, V, 3)
+    offset = einsum(J_regressor, verts[0], "j v, v i -> j i")[0]  # (3)
+    offset[1] = verts[:, :, [1]].min()
+    verts = verts - offset
+    # face direction
+    T_ay2ayfz = compute_T_ayfz2ay(einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"), inverse=True)
+    verts = apply_T_on_points(verts, T_ay2ayfz)
+    joints = einsum(J_regressor, verts, "j v, l v i -> l j i")  # (L, J, 3)
+
+    return verts, joints

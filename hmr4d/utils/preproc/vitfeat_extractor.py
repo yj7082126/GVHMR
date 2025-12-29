@@ -10,9 +10,9 @@ from hmr4d.network.hmr2.utils.preproc import crop_and_resize, IMAGE_MEAN, IMAGE_
 from tqdm import tqdm
 
 
-def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="video"):
+def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="video", rotate=0):
     if path_type == "video":
-        imgs = read_video_np(input_path, scale=img_ds)
+        imgs = read_video_np(input_path, scale=img_ds, rotate=rotate)
     elif path_type == "image":
         imgs = cv2.imread(str(input_path))[..., ::-1]
         imgs = cv2.resize(imgs, (0, 0), fx=img_ds, fy=img_ds)
@@ -62,13 +62,13 @@ class Extractor:
         self.extractor: HMR2 = load_hmr2().cuda().eval()
         self.tqdm_leave = tqdm_leave
 
-    def extract_video_features(self, video_path, bbx_xys, img_ds=0.5):
+    def extract_video_features(self, video_path, bbx_xys, img_ds=0.5, rotate=0):
         """
         img_ds makes the image smaller, which is useful for faster processing
         """
         # Get the batch
         if isinstance(video_path, str):
-            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds)
+            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds, rotate=rotate)
         else:
             assert isinstance(video_path, torch.Tensor)
             imgs = video_path

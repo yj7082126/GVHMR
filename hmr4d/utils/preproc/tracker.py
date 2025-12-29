@@ -21,15 +21,17 @@ class Tracker:
         # https://docs.ultralytics.com/modes/predict/
         self.yolo = YOLO(PROJ_ROOT / "inputs/checkpoints/yolo/yolov8x.pt")
 
-    def track(self, video_path):
+    def track(self, video_path, conf=0.5, imgsize=None):
         track_history = []
         cfg = {
             "device": "cuda",
-            "conf": 0.5,  # default 0.25, wham 0.5
+            "conf": conf,  # default 0.25, wham 0.5
             "classes": 0,  # human
             "verbose": False,
             "stream": True,
         }
+        if imgsize is not None:
+            cfg["imgsz"] = imgsize  # e.g., 640
         results = self.yolo.track(video_path, **cfg)
         # frame-by-frame tracking
         track_history = []
@@ -72,18 +74,8 @@ class Tracker:
 
         return id_to_frame_ids, id_to_bbx_xyxys, id_sorted
 
-    def get_one_track(self, video_path):
-        # track
-        track_history = self.track(video_path)
-
-        # parse track_history & use top1 track
-        id_to_frame_ids, id_to_bbx_xyxys, id_sorted = self.sort_track_length(track_history, video_path)
-        track_id = id_sorted[0]
-        frame_ids = torch.tensor(id_to_frame_ids[track_id])  # (N,)
-        bbx_xyxys = torch.tensor(id_to_bbx_xyxys[track_id])  # (N, 4)
-
-        # interpolate missing frames
-        mask = frame_id_to_mask(frame_ids, get_video_lwh(video_path)[0])
+    def interpolate_smooth_bbx(self, frame_ids, bbx_xyxys, length=50):
+        mask = frame_id_to_mask(frame_ids, length)
         bbx_xyxy_one_track = rearrange_by_mask(bbx_xyxys, mask)  # (F, 4), missing filled with 0
         missing_frame_id_list = get_frame_id_list_from_mask(~mask)  # list of list
         bbx_xyxy_one_track = linear_interpolate_frame_ids(bbx_xyxy_one_track, missing_frame_id_list)
@@ -91,5 +83,26 @@ class Tracker:
 
         bbx_xyxy_one_track = moving_average_smooth(bbx_xyxy_one_track, window_size=5, dim=0)
         bbx_xyxy_one_track = moving_average_smooth(bbx_xyxy_one_track, window_size=5, dim=0)
+        return bbx_xyxy_one_track
 
+    def get_one_track(self, video_path, conf=0.5, imgsize=None, track_id=None, 
+                      print_res=True):
+        # track
+        track_history = self.track(video_path, conf=conf, imgsize=imgsize)
+        vid_length = len(track_history)
+        # parse track_history & use top1 track
+        id_to_frame_ids, id_to_bbx_xyxys, id_sorted = self.sort_track_length(track_history, video_path)
+        if print_res:
+            for k in id_sorted:
+                lst = id_to_frame_ids[k]
+                ranges = np.split(lst, np.where(np.diff(lst)!=1)[0]+1)
+                ranges = [(x[0], x[-1]) if len(x) > 1 else (x[0], x[0]) for x in ranges]
+                print(f"track id {k}: {len(lst)} frames, ranges: {ranges}")
+                
+        track_id = id_sorted[0] if track_id is None else track_id
+        frame_ids = torch.tensor(id_to_frame_ids[track_id])  # (N,)
+        bbx_xyxys = torch.tensor(id_to_bbx_xyxys[track_id])  # (N, 4)
+
+        # interpolate missing frames
+        bbx_xyxy_one_track = self.interpolate_smooth_bbx(frame_ids, bbx_xyxys, length=vid_length)
         return bbx_xyxy_one_track

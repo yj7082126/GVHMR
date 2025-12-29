@@ -12,18 +12,18 @@ def to_numpy(x):
     return x.clone().cpu().numpy()
 
 
-def draw_bbx_xys_on_image(bbx_xys, image, conf=True):
+def draw_bbx_xys_on_image(bbx_xys, image, conf=True, color=(255, 178, 102), thickness=2):
     assert isinstance(bbx_xys, np.ndarray)
     assert isinstance(image, np.ndarray)
     image = image.copy()
     lu_point = (bbx_xys[:2] - bbx_xys[2:] / 2).astype(int)
     rd_point = (bbx_xys[:2] + bbx_xys[2:] / 2).astype(int)
-    color = (255, 178, 102) if conf == True else (128, 128, 128)  # orange or gray
-    image = cv2.rectangle(image, lu_point, rd_point, color, 2)
+    color = color if conf == True else (128, 128, 128)  # use provided color or gray
+    image = cv2.rectangle(image, lu_point, rd_point, color, thickness=thickness)
     return image
 
 
-def draw_bbx_xys_on_image_batch(bbx_xys_batch, image_batch, conf=None):
+def draw_bbx_xys_on_image_batch(bbx_xys_batch, image_batch, conf=None, color=(255, 178, 102), thickness=2):
     """conf: if provided, list of bool"""
     use_conf = conf is not None
     bbx_xys_batch = to_numpy(bbx_xys_batch)
@@ -31,21 +31,21 @@ def draw_bbx_xys_on_image_batch(bbx_xys_batch, image_batch, conf=None):
     image_batch_out = []
     for i in range(len(bbx_xys_batch)):
         if use_conf:
-            image_batch_out.append(draw_bbx_xys_on_image(bbx_xys_batch[i], image_batch[i], conf[i]))
+            image_batch_out.append(draw_bbx_xys_on_image(bbx_xys_batch[i], image_batch[i], conf[i], color=color, thickness=thickness))
         else:
-            image_batch_out.append(draw_bbx_xys_on_image(bbx_xys_batch[i], image_batch[i]))
+            image_batch_out.append(draw_bbx_xys_on_image(bbx_xys_batch[i], image_batch[i], color=color, thickness=thickness))
     return image_batch_out
 
 
-def draw_bbx_xyxy_on_image(bbx_xys, image, conf=True):
+def draw_bbx_xyxy_on_image(bbx_xys, image, conf=True, color=(255, 178, 102), thickness=2):
     bbx_xys = to_numpy(bbx_xys)
     image = to_numpy(image)
-    color = (255, 178, 102) if conf == True else (128, 128, 128)  # orange or gray
-    image = cv2.rectangle(image, (int(bbx_xys[0]), int(bbx_xys[1])), (int(bbx_xys[2]), int(bbx_xys[3])), color, 2)
+    color = color if conf == True else (128, 128, 128)  # use provided color or gray
+    image = cv2.rectangle(image, (int(bbx_xys[0]), int(bbx_xys[1])), (int(bbx_xys[2]), int(bbx_xys[3])), color, thickness=thickness)
     return image
 
 
-def draw_bbx_xyxy_on_image_batch(bbx_xyxy_batch, image_batch, mask=None, conf=None):
+def draw_bbx_xyxy_on_image_batch(bbx_xyxy_batch, image_batch, mask=None, conf=None, color=(255, 178, 102), thickness=2):
     """
     Args:
         conf: if provided, list of bool, mutually exclusive with mask
@@ -62,10 +62,10 @@ def draw_bbx_xyxy_on_image_batch(bbx_xyxy_batch, image_batch, mask=None, conf=No
     image_batch_out = []
     for i in range(len(bbx_xyxy_batch)):
         if use_conf:
-            image_batch_out.append(draw_bbx_xyxy_on_image(bbx_xyxy_batch[i], image_batch[i], conf[i]))
+            image_batch_out.append(draw_bbx_xyxy_on_image(bbx_xyxy_batch[i], image_batch[i], conf[i], color=color, thickness=thickness))
         else:
             if mask is None or mask[i]:
-                image_batch_out.append(draw_bbx_xyxy_on_image(bbx_xyxy_batch[i], image_batch[i]))
+                image_batch_out.append(draw_bbx_xyxy_on_image(bbx_xyxy_batch[i], image_batch[i], color=color, thickness=thickness))
             else:
                 image_batch_out.append(image_batch[i])
     return image_batch_out
@@ -77,6 +77,16 @@ def draw_kpts(frame, keypoints, color=(0, 255, 0), thickness=2):
         cv2.circle(frame_, (int(x), int(y)), thickness, color, -1)
     return frame_
 
+def draw_kpts_batch(frames, kp2d_batch, color=(0, 255, 0), thickness=2):
+    """
+    Args:
+        kp2d_batch: (B, J, 2),
+    """
+    assert len(frames) == len(kp2d_batch)
+    frames_ = []
+    for i in range(len(frames)):
+        frames_.append(draw_kpts(frames[i], kp2d_batch[i], color=color, thickness=thickness))
+    return frames_
 
 def draw_kpts_with_conf(frame, kp2d, conf, thickness=2):
     """

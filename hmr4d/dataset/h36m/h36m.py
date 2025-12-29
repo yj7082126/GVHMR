@@ -30,7 +30,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
     ):
         # Path
         self.root = Path(root)
-
+        self.dataset_name = "h36m"
         # Coord
         self.original_coord = original_coord
 
@@ -80,11 +80,10 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         Log.info(f"[H36M] has {hours:.1f} hours motion -> Resampled to {len(self.idx2meta)} samples.")
 
     def _load_data(self, idx):
-        sampled_motion = {}
+        data = {}
         vid = self.idx2meta[idx]
         motion = self.motion_files[vid]
         seq_length = self.f_img_dicts[vid]["bbx_xys"].shape[0]  # this is a better choice
-        sampled_motion["vid"] = vid
 
         # Random select a subset
         target_length = self.motion_frames
@@ -96,25 +95,25 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
             start = np.random.randint(0, seq_length - target_length)
             length = target_length
         end = start + length
-        sampled_motion["length"] = length
-        sampled_motion["start_end"] = (start, end)
+        data["length"] = length
+        data["meta"] = {"data_name": self.dataset_name, "idx": idx, "vid": vid, "start_end": (start, end)}
 
         # Select motion subset
         # body_pose, global_orient, transl, betas
-        sampled_motion["smpl_params_global"] = {k: v[start:end] for k, v in motion["smpl_params_glob"].items()}
+        data["smpl_params_global"] = {k: v[start:end] for k, v in motion["smpl_params_glob"].items()}
 
         # Image as feature
         f_img_dict = self.f_img_dicts[vid]
-        sampled_motion["f_imgseq"] = f_img_dict["features"][start:end].float()  # (L, 1024)
-        sampled_motion["bbx_xys"] = f_img_dict["bbx_xys"][start:end]
-        sampled_motion["K_fullimg"] = f_img_dict["K_fullimg"]
-        # sampled_motion["kp2d"] = self.vitpose[vid][start:end].float()  # (L, 17, 3)
-        sampled_motion["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)
+        data["f_imgseq"] = f_img_dict["features"][start:end].float()  # (L, 1024)
+        data["bbx_xys"] = f_img_dict["bbx_xys"][start:end]
+        data["K_fullimg"] = f_img_dict["K_fullimg"]
+        # data["kp2d"] = self.vitpose[vid][start:end].float()  # (L, 17, 3)
+        data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)
 
         # Camera
-        sampled_motion["T_w2c"] = motion["cam_Rt"]  # (4, 4)
+        data["T_w2c"] = motion["cam_Rt"]  # (4, 4)
 
-        return sampled_motion
+        return data
 
     def _process_data(self, data, idx):
         length = data["length"]
@@ -152,7 +151,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         # Returns: do not forget to make it batchable! (last lines)
         max_len = self.motion_frames
         return_data = {
-            "meta": {"data_name": "h36m", "idx": idx, "vid": data["vid"]},
+            "meta": data["meta"],
             "length": length,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w,

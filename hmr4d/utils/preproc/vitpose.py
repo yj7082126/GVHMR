@@ -5,25 +5,28 @@ from .vitpose_pytorch import build_model
 from .vitfeat_extractor import get_batch
 from tqdm import tqdm
 
+from hmr4d import PROJ_ROOT
 from hmr4d.utils.kpts.kp2d_utils import keypoints_from_heatmaps
 from hmr4d.utils.geo_transform import cvt_p2d_from_pm1_to_i
 from hmr4d.utils.geo.flip_utils import flip_heatmap_coco17
 
+VITPOSE_CKPT = PROJ_ROOT / f"inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth"
 
 class VitPoseExtractor:
     def __init__(self, tqdm_leave=True):
-        ckpt_path = "inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth"
-        self.pose = build_model("ViTPose_huge_coco_256x192", ckpt_path)
+        
+        self.ckpt_path = VITPOSE_CKPT
+        self.pose = build_model("ViTPose_huge_coco_256x192", self.ckpt_path)
         self.pose.cuda().eval()
 
         self.flip_test = True
         self.tqdm_leave = tqdm_leave
 
     @torch.no_grad()
-    def extract(self, video_path, bbx_xys, img_ds=0.5):
+    def extract(self, video_path, bbx_xys, img_ds=0.5, rotate=0):
         # Get the batch
         if isinstance(video_path, str):
-            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds)
+            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds, rotate=rotate)
         else:
             assert isinstance(video_path, torch.Tensor)
             imgs = video_path
@@ -43,28 +46,13 @@ class VitPoseExtractor:
             else:
                 heatmap = self.pose(imgs_batch.clone())  # (B, J, 64, 48)
 
-            if False:
-                # Get joint
-                bbx_xys_batch = bbx_xys[j : j + batch_size].cuda()
-                method = "hard"
-                if method == "hard":
-                    kp2d_pm1, conf = get_heatmap_preds(heatmap)
-                elif method == "soft":
-                    kp2d_pm1, conf = get_heatmap_preds(heatmap, soft=True)
-
-                # Convert 64, 48 to 64, 64
-                kp2d_pm1[:, :, 0] *= 24 / 32
-                kp2d = cvt_p2d_from_pm1_to_i(kp2d_pm1, bbx_xys_batch[:, None])
-                kp2d = torch.cat([kp2d, conf], dim=-1)
-
-            else:  # postprocess from mmpose
-                bbx_xys_batch = bbx_xys[j : j + batch_size]
-                heatmap = heatmap.clone().cpu().numpy()
-                center = bbx_xys_batch[:, :2].numpy()
-                scale = (torch.cat((bbx_xys_batch[:, [2]] * 24 / 32, bbx_xys_batch[:, [2]]), dim=1) / 200).numpy()
-                preds, maxvals = keypoints_from_heatmaps(heatmaps=heatmap, center=center, scale=scale, use_udp=True)
-                kp2d = np.concatenate((preds, maxvals), axis=-1)
-                kp2d = torch.from_numpy(kp2d)
+            bbx_xys_batch = bbx_xys[j : j + batch_size]
+            heatmap = heatmap.clone().cpu().numpy()
+            center = bbx_xys_batch[:, :2].numpy()
+            scale = (torch.cat((bbx_xys_batch[:, [2]] * 24 / 32, bbx_xys_batch[:, [2]]), dim=1) / 200).numpy()
+            preds, maxvals = keypoints_from_heatmaps(heatmaps=heatmap, center=center, scale=scale, use_udp=True)
+            kp2d = np.concatenate((preds, maxvals), axis=-1)
+            kp2d = torch.from_numpy(kp2d)
 
             vitpose.append(kp2d.detach().cpu().clone())
 
