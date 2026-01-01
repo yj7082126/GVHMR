@@ -111,7 +111,11 @@ class AmassDataset(BaseDataset):
             tsf="az->ay",
         )
 
-        data_interpolated["data_name"] = "amass"
+        data_interpolated["length"] = data_interpolated["body_pose"].shape[0]
+        data_interpolated["meta"] = {"data_name": "amass", 
+                                     "idx": idx, "vid": mid, 
+                                     "start_end": (start, end)}
+
         return data_interpolated
 
 

@@ -49,8 +49,8 @@ class BaseDataset(Dataset):
                 "transl": (F, 3),  in the AY coordinates
             }
         """
-        data_name = data["data_name"]
-        length = data["body_pose"].shape[0]
+        length = data["length"]
+        meta = data['meta']
         # Augmentation: betas, SMPL (gravity-axis)
         body_pose = data["body_pose"]
         betas = augment_betas(data["betas"], std=0.1)
@@ -148,7 +148,7 @@ class BaseDataset(Dataset):
         # NOTE: bbx_xys and f_imgseq will be added later
         max_len = length
         return_data = {
-            "meta": {"data_name": data_name, "idx": idx, "T_w2c": T_w2c},
+            "meta": meta,
             "length": length,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w,
