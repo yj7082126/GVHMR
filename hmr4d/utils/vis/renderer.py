@@ -124,7 +124,8 @@ class Renderer:
         self.renderer = MeshRenderer(
             rasterizer=MeshRasterizer(
                 raster_settings=RasterizationSettings(
-                    image_size=self.image_sizes[0], blur_radius=1e-5, bin_size=self.bin_size
+                    image_size=self.image_sizes[0], 
+                    blur_radius=1e-5, bin_size=self.bin_size
                 ),
             ),
             shader=SoftPhongShader(
@@ -239,8 +240,10 @@ class Renderer:
 
         return pts_full.detach().cpu(), valid.detach().cpu().to(dtype=torch.float32)
 
-    def render_mesh(self, vertices, background=None, colors=[0.8, 0.8, 0.8], VI=50):
-        self.update_bbox(vertices[::VI], scale=1.2)
+    def render_mesh(self, vertices, background=None, faces=None, colors=[0.8, 0.8, 0.8], VI=50, 
+                    update_bbox=True, flip=True):
+        if update_bbox:
+            self.update_bbox(vertices[::VI], scale=1.2)
         vertices = vertices.unsqueeze(0)
 
         if isinstance(colors, torch.Tensor):
@@ -254,22 +257,27 @@ class Renderer:
             verts_features = verts_features.repeat(1, vertices.shape[1], 1)
         textures = TexturesVertex(verts_features=verts_features)
 
-        mesh = Meshes(
-            verts=vertices,
-            faces=self.faces,
-            textures=textures,
-        )
+        if faces is None:
+            faces = self.faces
+        mesh = Meshes(verts=vertices, faces=faces, textures=textures)
 
         materials = Materials(device=self.device, specular_color=(colors,), shininess=0)
 
-        results = torch.flip(self.renderer(mesh, materials=materials, cameras=self.cameras, lights=self.lights), [1, 2])
+        results = self.renderer(mesh, materials=materials, cameras=self.cameras, lights=self.lights)
+        if flip:
+            results = torch.flip(results, [1, 2])
         image = results[0, ..., :3] * 255
         mask = results[0, ..., -1] > 1e-3
 
         if background is None:
             background = np.ones((self.height, self.width, 3)).astype(np.uint8) * 255
+            
+        if update_bbox:
+            bbox = self.bboxes
+        else:
+            bbox = torch.tensor([[0, 0, self.width, self.height]]).float().to(self.device)
 
-        image = overlay_image_onto_background(image, mask, self.bboxes, background.copy())
+        image = overlay_image_onto_background(image, mask, bbox, background.copy())
         self.reset_bbox()
         return image
 

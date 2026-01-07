@@ -802,3 +802,75 @@ def imshow_keypoints(
                         cv2.line(img, pos1, pos2, color, thickness=thickness)
 
     return img
+
+
+def frustum_vertices_in_camera(K: torch.Tensor, W: int, H: int,     
+    z_near: float = 0.4, z_far: float = 1.2,
+    scale_xy: float = 1.0, offset_z: float = 2.0, use_far: bool = False):
+    """
+    Build a simple 5-vertex pyramid frustum at depth z_near.
+    Returns verts_cam: (5,3)
+      0: camera center
+      1..4: near-plane corners in camera coords
+    """
+    fx = K[0, 0]
+    fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+
+    # image corners (pixel coords)
+    corners_uv = torch.tensor([
+        [0.0, 0.0],
+        [W - 1.0, 0.0],
+        [W - 1.0, H - 1.0],
+        [0.0, H - 1.0],
+    ], device=K.device, dtype=K.dtype)
+
+    def backproject(uv, z):
+        zt = torch.full((4,1), float(z), device=K.device, dtype=K.dtype)
+        x = (uv[:,0:1] - cx) / fx * zt
+        y = (uv[:,1:2] - cy) / fy * zt
+        pts = torch.cat([x, y, zt], dim=1)  # (4,3)
+        # Scale in x/y around the optical axis; keep z unchanged
+        pts[:, 0:2] *= float(scale_xy)
+        # Shift along z (move frustum away/toward camera)
+        pts[:, 2] += float(offset_z)
+        return pts
+
+    # Camera center (you can also offset this if you want, but usually keep at 0)
+    cam_center = torch.zeros((1,3), device=K.device, dtype=K.dtype)
+    cam_center[:, 2] += float(offset_z)
+
+    near = backproject(corners_uv, z_near)
+    far = backproject(corners_uv, z_far)
+    if not use_far:
+        near_corners_cam = near
+    else:
+        near_corners_cam = torch.cat([near, far], dim=0)
+
+    # z = torch.full((4, 1), float(z_near), device=K.device, dtype=K.dtype)
+    # pinhole backprojection to camera coords (+Z forward convention)
+    # x = (corners_uv[:, 0:1] - cx) / fx * z
+    # y = (corners_uv[:, 1:2] - cy) / fy * z
+    # near_corners_cam = torch.cat([x, y, z], dim=1)  # (4,3)
+
+    # cam_center = torch.zeros((1, 3), device=K.device, dtype=K.dtype)
+    verts_cam = torch.cat([cam_center, near_corners_cam], dim=0)  # (5,3)
+    if not use_far:
+        faces_cam = torch.tensor([
+        [0,1,2],[0,2,3],[0,3,4],[0,4,1],
+        [1,2,3],[1,3,4],
+    ], dtype=torch.int64, device=K.device)
+    else:
+        faces_cam = torch.tensor([
+            # sides as two triangles per edge strip
+            [1,2,6],[1,6,5],
+            [2,3,7],[2,7,6],
+            [3,4,8],[3,8,7],
+            [4,1,5],[4,5,8],
+            # near plane
+            [1,2,3],[1,3,4],
+            # far plane
+            [5,6,7],[5,7,8],
+        ], dtype=torch.int64, device=K.device)
+    return verts_cam, faces_cam
