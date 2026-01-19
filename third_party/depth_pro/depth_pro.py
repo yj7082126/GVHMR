@@ -21,6 +21,7 @@ from .network.decoder import MultiresConvDecoder
 from .network.encoder import DepthProEncoder
 from .network.fov import FOVNetwork
 from .network.vit_factory import VIT_CONFIG_DICT, ViTPreset, create_vit
+from huggingface_hub import hf_hub_download
 
 
 @dataclass
@@ -39,7 +40,7 @@ class DepthProConfig:
 DEFAULT_MONODEPTH_CONFIG_DICT = DepthProConfig(
     patch_encoder_preset="dinov2l16_384",
     image_encoder_preset="dinov2l16_384",
-    checkpoint_uri="./checkpoints/depth_pro.pt",
+    checkpoint_uri=hf_hub_download(repo_id="apple/DepthPro", filename="depth_pro.pt", repo_type="model"),
     decoder_features=256,
     use_fov_head=True,
     fov_encoder_preset="dinov2l16_384",

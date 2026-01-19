@@ -181,3 +181,4 @@ glove
 # datasets
 datasets/
 samples/
+checkpoints/depth_pro.pt
