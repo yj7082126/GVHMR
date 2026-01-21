@@ -41,7 +41,7 @@ class AmassDataset(BaseDataset):
         if self.random1024:  # Debug, faster loading
             try:
                 Log.info(f"[{self.dataset_name}] Loading 1024 samples for debugging ...")
-                self.motion_files = torch.load(self.root / "smplxpose_v2_random1024.pth")
+                self.motion_files = torch.load(self.root / "smplxpose_v2_random1024.pth", weights_only=True)
             except:
                 Log.info(f"[{self.dataset_name}] Not found! Saving 1024 samples for debugging ...")
                 self.motion_files = torch.load(filename)
@@ -124,3 +124,4 @@ class AmassDataset(BaseDataset):
 
 group_name = "train_datasets/pure_motion_amass"
 MainStore.store(name="v11", node=builds(AmassDataset, cam_augmentation="v11"), group=group_name)
+MainStore.store(name="v20", node=builds(AmassDataset, cam_augmentation="v20"), group=group_name)

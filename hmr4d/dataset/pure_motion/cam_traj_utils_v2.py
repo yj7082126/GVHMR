@@ -10,13 +10,83 @@ from hmr4d.utils.geo.hmr_cam import create_camera_sensor
 from hmr4d.utils.geo_transform import transform_mat, apply_T_on_points
 from hmr4d.utils.geo.transforms import axis_rotate_to_matrix
 
-def create_camera(w_root, width, focal, pitch_mean=5.0, pitch_std=22.5, 
-                  roll_std=7.5, tz_range1=[3.0, 6.0]):
+def human_look_direction_cam(
+    joints_w,         # (J, 3) or (B, J, 3) in world coords
+    R_w2c,            # (3, 3) world -> camera
+):
+    # Default indices for your 127-joint layout
+    if joints_w.dim() == 2:
+        joints_w = joints_w.unsqueeze(0)  # (1, J, 3)
+
+    neck, jaw, re, le, nose = 12, 22, 56, 57, 55
+    # Head direction in world space: from neck to face center
+    face = (joints_w[:, nose] + joints_w[:, re] + joints_w[:, le] + joints_w[:, jaw]) / 4.0
+    head_dir_w = face - joints_w[:, neck]
+    head_dir_w = head_dir_w / (head_dir_w.norm(dim=-1, keepdim=True) + 1e-6)
+    # Convert to camera space
+    head_dir_c = torch.einsum("ij,bj->bi", R_w2c, head_dir_w)
+    head_dir_c = head_dir_c / (head_dir_c.norm(dim=-1, keepdim=True) + 1e-6)
+    return head_dir_c
+
+def get_yaw_range(joints_w, pitch, roll):
+    head_dir_w = human_look_direction_cam(joints_w, R_w2c=torch.eye(3))[0]
+
+    R_y_upsidedown = torch.tensor([[-1, 0, 0], [0, -1, 0], [0, 0, 1]]).float()
+    pitch_rm = axis_rotate_to_matrix(pitch, axis="x", use_deg=True)[0]
+    roll_rm = axis_rotate_to_matrix(roll, axis="z", use_deg=True)[0]
+    M = roll_rm @ pitch_rm
+    v = R_y_upsidedown @ head_dir_w
+    a = M[2, :]
+
+    vx, vy, vz = v.tolist()
+    ax, ay, az = a.tolist()
+
+    A = ax * vx + az * vz
+    B = ax * vz - az * vx
+    C = ay * vy
+    D = -(C + 1e-12)
+    R = np.sqrt(A*A + B*B)
+
+    if R < 1e-12:
+        if C < -1e-12:
+            return [(0.0, 360.0)]
+        else:
+            return []
+
+    alpha = np.arctan2(A, B)
+    t = D / R  # threshold for sin(theta)
+
+    # Strict inequality handling
+    if t <= -1.0:
+        return (0.0, 360.0)
+    if t >= 1.0:
+        return (0.0, 360.0)
+
+    theta_a = np.arcsin(t)        # in (-pi/2, pi/2)
+    theta_b = np.pi - theta_a   # in (pi/2, 3pi/2)
+
+    # sin(theta) < t holds on (theta_b, 2pi + theta_a)
+    start_deg = (theta_b - alpha) * 180.0 / np.pi
+    end_deg   = (theta_a - alpha) * 180.0 / np.pi
+
+    s = start_deg % 360.0 if start_deg >= 0.0 else (360.0 + start_deg) % 360.0
+    e = end_deg % 360.0 if end_deg >= 0.0 else (360.0 + end_deg) % 360.0
+    if abs(s - e) < 1e-12:
+        return (0.0, 360.0)  # ambiguous; handled upstream
+    elif s < e:
+        return (s, e)
+    else:
+        return (s, 360.0 + e)
+
+
+def create_camera(joints_w, width, focal, pitch_range=[-10.0, 10.0],
+                  roll_range=[0.0, 0.0], tz_range=[1.5, 4.5]):
 
     # algo
-    yaw = np.random.rand() * 2 * np.pi  # Look at any direction in xz-plane
-    pitch = np.clip(np.random.randn() * pitch_std + pitch_mean, -90., 90)
-    roll = np.clip(np.random.randn() * roll_std, -90., 90)  # Normal-dist
+    pitch = np.random.uniform(pitch_range[0], pitch_range[1])
+    roll = np.random.uniform(roll_range[0], roll_range[1])
+    yaw_range = get_yaw_range(joints_w, pitch=pitch, roll=roll)
+    yaw = np.random.uniform(yaw_range[0], yaw_range[1])    
 
     # Note we use OpenCV's camera system by first applying R_y_upsidedown
     R_y_upsidedown = torch.tensor([[-1, 0, 0], [0, -1, 0], [0, 0, 1]]).float()
@@ -26,13 +96,13 @@ def create_camera(w_root, width, focal, pitch_mean=5.0, pitch_std=22.5,
     R_w2c = (roll_rm @ pitch_rm @ yaw_rm @ R_y_upsidedown).squeeze(0)  # (3, 3)
 
     # Place people in the scene
-    tz = np.random.rand() * (tz_range1[1] - tz_range1[0]) + tz_range1[0]
+    tz = np.random.uniform(tz_range[0], tz_range[1])
     max_dist_in_fov = (width / 2) / focal * tz
     tx = (np.random.rand() * 2 - 1) * 0.7 * max_dist_in_fov
     ty = (np.random.rand() * 2 - 1) * 0.5 * max_dist_in_fov
 
     dist = torch.tensor([tx, ty, tz], dtype=torch.float)
-    t_w2c = dist - torch.matmul(R_w2c, w_root)
+    t_w2c = dist - torch.matmul(R_w2c, joints_w[0]) #pelvis
 
     return R_w2c, t_w2c
 
@@ -94,7 +164,7 @@ def adjust_camera_for_rel_area(
         u_min, u_max, v_min, v_max, z = project(R0_w2c, t0_w2c)
         joint_w, joint_h = (u_max - u_min) , (v_max - v_min)
         percentage = (joint_w * joint_h) / float(img_w * img_h)
-        print(f"Percentage : {percentage.item()*100:.2f}%")
+        # print(f"Percentage : {percentage.item()*100:.2f}%")
         if percentage >= min_rel_area and percentage < max_rel_area:
             break
         
@@ -104,9 +174,9 @@ def adjust_camera_for_rel_area(
         
     # 2) if head faces away, rotate camera 180° around Y (camera space)
     head_dir_c = human_look_direction_cam(smplx_joints_w, R0_w2c)
-    print(f"Head looking backwards camera: {head_dir_c[..., 2] > is_backward_facing} ({head_dir_c[..., 2].mean().item():.2f})")
+    # print(f"Head looking backwards camera: {head_dir_c[..., 2] > is_backward_facing} ({head_dir_c[..., 2].mean().item():.2f})")
     if head_dir_c[..., 2].mean() > is_backward_facing:
-        print(f"Backward facing detected (z={head_dir_c[..., 2].mean().item():.2f}), flip camera")
+        # print(f"Backward facing detected (z={head_dir_c[..., 2].mean().item():.2f}), flip camera")
         R_world = axis_angle_to_matrix(
             torch.tensor([0.0, np.pi, 0.0], device=R0_w2c.device)
         ).squeeze(0)
@@ -121,7 +191,7 @@ def adjust_camera_for_rel_area(
         # recompute translation from new camera center
         t0_w2c = -R0_w2c @ C_new
         head_dir_c = human_look_direction_cam(smplx_joints_w, R0_w2c)
-        print(f"Head looking backwards camera: {head_dir_c[..., 2] > is_backward_facing} ({head_dir_c[..., 2].mean().item():.2f})")
+        # print(f"Head looking backwards camera: {head_dir_c[..., 2] > is_backward_facing} ({head_dir_c[..., 2].mean().item():.2f})")
 
     # 3) keep all joints within margin box (l/t/r/b), iterate up to max_loops
     left_bound = l_margin * img_w
@@ -142,7 +212,7 @@ def adjust_camera_for_rel_area(
         elif v_max > bottom_bound:
             dy_px = bottom_bound - v_max
 
-        print(f"Margin adjusting: ({u_min:.2f}, {v_min:.2f}, {u_max:.2f}, {v_max:.2f}) dx_px={dx_px:.1f}, dy_px={dy_px:.1f}")
+        # print(f"Margin adjusting: ({u_min:.2f}, {v_min:.2f}, {u_max:.2f}, {v_max:.2f}) dx_px={dx_px:.1f}, dy_px={dy_px:.1f}")
         if dx_px == 0.0 and dy_px == 0.0:
             break
         
@@ -194,12 +264,12 @@ class CameraAugmenterV20:
     
     def __init__(self, w, h, f_fullframe=24):
         self.width, self.height, self.K_fullimg = create_camera_sensor(w, h, f_fullframe)
-        self.yaw_std = 10.0
-        self.pitch_std = 5.0
-        self.roll_std = 2.5
-        self.tx_std = 0.5
-        self.ty_std = 0.2
-        self.tz_std = 0.5
+        self.yaw_std = 5.0
+        self.pitch_std = 2.5
+        self.roll_std = 0.0
+        self.tx_std = 0.25
+        self.ty_std = 0.1
+        self.tz_std = 0.25
         self.step_noise_perc = 0.2
         
     def __call__(self, w_j3d, seed=None, **kwargs):
@@ -207,29 +277,29 @@ class CameraAugmenterV20:
         if seed is not None:
             np.random.seed(seed)
         
-        R0_w2c, t0_w2c = create_camera(w_j3d[0,0], self.width, self.K_fullimg[0,0])
+        R0_w2c, t0_w2c = create_camera(w_j3d[0], self.width, self.K_fullimg[0,0])
         R0_new_w2c, t0_new_w2c = adjust_camera_for_rel_area(
             w_j3d[:1], R0_w2c, t0_w2c, self.K_fullimg, **kwargs)
 
         yaw, pitch, roll = kwargs.get("yaw", None), kwargs.get("pitch", None), kwargs.get("roll", None)
         if yaw is None:
-            yaw = (np.random.rand() * 2 - 1) * self.yaw_std # +/- 60°
+            yaw = np.random.normal() * self.yaw_std # +/- 60°
         if pitch is None:
-            pitch = (np.random.rand() * 2 - 1) * self.pitch_std  # +/- 30°
+            pitch = np.random.normal() * self.pitch_std  # +/- 30°
         if roll is None:
-            roll = (np.random.rand() * 2 - 1) * self.roll_std  # +/- 30°
-        print(f"Camera rotation deltas (yaw, pitch, roll): ({yaw:.1f}, {pitch:.1f}, {roll:.1f})")
+            roll = np.random.normal() * self.roll_std  # +/- 30°
+        # print(f"Camera rotation deltas (yaw, pitch, roll): ({yaw:.1f}, {pitch:.1f}, {roll:.1f})")
         R_w2c, R_linspace = create_rotation_track(R0_new_w2c, nframe, 
             yaw=yaw, pitch=pitch, roll=roll, step_noise_perc=self.step_noise_perc)
 
         tx, ty, tz = kwargs.get("tx", None), kwargs.get("ty", None), kwargs.get("tz", None)
         if tx is None:
-            tx = (np.random.rand() * 2 - 1) * self.tx_std # +/- 1.0
+            tx = np.random.normal() * self.tx_std # +/- 1.0
         if ty is None:
-            ty = (np.random.rand() * 2 - 1) * self.ty_std  # +/- 0.25
+            ty = np.random.normal() * self.ty_std  # +/- 0.25
         if tz is None:
-            tz = (np.random.rand() * 2 - 1) * self.tz_std  # +/- 1.0
-        print(f"Camera translation deltas (tx, ty, tz): ({tx:.2f}, {ty:.2f}, {tz:.2f})")
+            tz = np.random.normal() * self.tz_std  # +/- 1.0
+        # print(f"Camera translation deltas (tx, ty, tz): ({tx:.2f}, {ty:.2f}, {tz:.2f})")
         t_w2c, t_linspace = create_translation_track(R0_new_w2c, t0_new_w2c, nframe, 
             tx=tx, ty=ty, tz=tz, step_noise_perc=self.step_noise_perc)
         T_w2c = transform_mat(R_w2c, t_w2c)

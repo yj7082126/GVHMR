@@ -169,8 +169,8 @@ class SmplxLiteCoco17(SmplxLite):
         super().__init__(**kwargs)
 
         # Compute mapping
-        smplx2smpl = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt")
-        COCO17_regressor = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smpl_coco17_J_regressor.pt")
+        smplx2smpl = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt", weights_only=True)
+        COCO17_regressor = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smpl_coco17_J_regressor.pt", weights_only=True)
         smplx2coco17 = torch.matmul(COCO17_regressor, smplx2smpl.to_dense())
 
         jids, smplx_vids = torch.where(smplx2coco17 != 0)
@@ -198,8 +198,8 @@ class SmplxLiteV437Coco17(SmplxLite):
         super().__init__(**kwargs)
 
         # Compute mapping (COCO17)
-        smplx2smpl = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt")
-        COCO17_regressor = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smpl_coco17_J_regressor.pt")
+        smplx2smpl = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt", weights_only=True)
+        COCO17_regressor = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smpl_coco17_J_regressor.pt", weights_only=True)
         smplx2coco17 = torch.matmul(COCO17_regressor, smplx2smpl.to_dense())
 
         jids, smplx_vids = torch.where(smplx2coco17 != 0)
@@ -210,7 +210,7 @@ class SmplxLiteV437Coco17(SmplxLite):
         assert len(smplx_vids) == 132
 
         # Verts437
-        smplx_vids2 = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx_verts437.pt")
+        smplx_vids2 = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx_verts437.pt", weights_only=True)
         smplx_vids = torch.cat([smplx_vids, smplx_vids2])
 
         # Update to vertices of interest
@@ -240,8 +240,8 @@ class SmplxLiteSmplN24(SmplxLite):
         super().__init__(**kwargs)
 
         # Compute mapping
-        smplx2smpl = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt")
-        smpl2joints = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smpl_neutral_J_regressor.pt")
+        smplx2smpl = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt", weights_only=True)
+        smpl2joints = torch.load(PROJ_ROOT / "hmr4d/utils/body_model/smpl_neutral_J_regressor.pt", weights_only=True)
         smplx2joints = torch.matmul(smpl2joints, smplx2smpl.to_dense())
 
         jids, smplx_vids = torch.where(smplx2joints != 0)

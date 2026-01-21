@@ -6,7 +6,7 @@ defaults:
     - override /optimizer: adamw_2e-4
     - override /scheduler_cfg: epoch_half_200_350
     - override /train_datasets:
-        - pure_motion_amass/v11
+        - pure_motion_amass/v20
         - imgfeat_bedlam/v2
         - imgfeat_h36m/v1
         - imgfeat_3dpw/v1
@@ -26,10 +26,10 @@ defaults:
         - metric_3dpw
     - override /network: gvhmr/relative_transformer
 
-exp_name_base: mixed
-exp_name_var: "_tmp"
+exp_name_base: mixed2
+exp_name_var: ""
 exp_name: ${exp_name_base}${exp_name_var}
-data_name: mocap_mixed_v1
+data_name: mocap_mixed_v2
 
 pipeline:
     _target_: hmr4d.model.gvhmr.pipeline.gvhmr_pipeline.Pipeline

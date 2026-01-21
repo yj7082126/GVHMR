@@ -25,8 +25,8 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         self.threedpw_dir = Path("inputs/3DPW/hmr4d_support")
         # ['vname', 'K_fullimg', 'T_w2c', 'smpl_params', 'gender', 'mask_raw', 'mask_wham', 'img_wh']
         self.labels = torch.load(self.threedpw_dir / "test_3dpw_gt_labels.pt")
-        self.vid2bbx = torch.load(self.threedpw_dir / "preproc_test_bbx.pt")
-        self.vid2kp2d = torch.load(self.threedpw_dir / "preproc_test_kp2d_v0.pt")
+        self.vid2bbx = torch.load(self.threedpw_dir / "preproc_test_bbx.pt", weights_only=True)
+        self.vid2kp2d = torch.load(self.threedpw_dir / "preproc_test_kp2d_v0.pt", weights_only=True)
 
         # Setup dataset index
         self.idx2meta = list(self.labels)
@@ -73,7 +73,7 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         data.update({"bbx_xys": bbx_xys, "kp2d": kp2d, "cam_angvel": cam_angvel})
 
         imgfeat_dir = self.threedpw_dir / "imgfeats/3dpw_test"
-        f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt")
+        f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt", weights_only=True)
         f_imgseq = f_img_dict["features"].float()
         data["f_imgseq"] = f_imgseq  # (F, 1024)
 
@@ -98,7 +98,7 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
 
         if self.flip_test:
             imgfeat_dir = self.threedpw_dir / "imgfeats/3dpw_test_flip"
-            f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt")
+            f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt", weights_only=True)
             flipped_bbx_xys = f_img_dict["bbx_xys"].float()  # (L, 3)
             flipped_features = f_img_dict["features"].float()  # (L, 1024)
             flipped_kp2d = flip_kp2d_coco17(kp2d, width_height[0])  # (L, 17, 3)

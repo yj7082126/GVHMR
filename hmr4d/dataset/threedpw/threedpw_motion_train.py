@@ -87,7 +87,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         data["T_w2c"] = self.train_labels[vid]["T_w2c"][start:end]
 
         # Img (as feature):
-        f_img_dict = torch.load(self.f_img_folder / f"{vid}.pt")
+        f_img_dict = torch.load(self.f_img_folder / f"{vid}.pt", weights_only=True)
         data["bbx_xys"] = f_img_dict["bbx_xys"][start:end]  # (F, 3)
         data["f_imgseq"] = f_img_dict["features"][start:end].float()  # (F, 3)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)

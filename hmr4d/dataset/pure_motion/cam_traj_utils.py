@@ -352,7 +352,7 @@ class CameraAugmentorV11:
         w_j3d,
         length=120,
         camera_type=None,
-        debug=True,
+        debug=False,
         **kwargs,
     ):
         """

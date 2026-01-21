@@ -36,7 +36,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         fn = self.root / "smplxpose_v1.pt"
         self.smpl_model = make_smplx("supermotion")
         Log.info(f"[H36M] Loading from {fn} ...")
-        self.motion_files = torch.load(fn)
+        self.motion_files = torch.load(fn, weights_only=True)
         # Dict of {
         #          "smpl_params_glob": {'body_pose', 'global_orient', 'transl', 'betas'}, FxC
         #          "cam_Rt": tensor(F, 3),
@@ -51,7 +51,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
             tic = Log.time()
             fn = self.root / "vitfeat_h36m.pt"
             Log.info(f"[H36M] Fully Loading to RAM ViT-Feat: {fn}")
-            self.f_img_dicts = torch.load(fn)
+            self.f_img_dicts = torch.load(fn, weights_only=True)
             Log.info(f"[H36M] Finished. Elapsed: {Log.time() - tic:.2f}s")
         else:
             raise NotImplementedError  # "Check BEDLAM-SMPL for lazy_load"

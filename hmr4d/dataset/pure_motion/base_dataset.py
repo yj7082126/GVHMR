@@ -91,7 +91,7 @@ class BaseDataset(Dataset):
 
         elif self.cam_augmentation == "v20":
             w_j3d = self.smplx(**smpl_params_w).joints  # (F, 22, 3)
-            print(w_j3d)
+            # print(w_j3d)
             cam_augmentor = CameraAugmenterV20(
                 self.width, self.height, f_fullframe=self.f_fullframe)
             T_w2c, R_linspace, t_linspace, cam_meta = cam_augmentor(w_j3d)

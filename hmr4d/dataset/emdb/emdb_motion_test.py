@@ -34,8 +34,8 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         tic = Log.time()
         self.emdb_dir = Path("inputs/EMDB/hmr4d_support")
         # 'name', 'gender', 'smpl_params', 'mask', 'K_fullimg', 'T_w2c', 'bbx_xys', 'kp2d', 'features'
-        self.labels = torch.load(self.emdb_dir / "emdb_vit_v4.pt")
-        self.cam_traj = torch.load(self.emdb_dir / "emdb_dpvo_traj.pt")  # estimated with DPVO
+        self.labels = torch.load(self.emdb_dir / "emdb_vit_v4.pt", weights_only=True)
+        self.cam_traj = torch.load(self.emdb_dir / "emdb_dpvo_traj.pt", weights_only=True)  # estimated with DPVO
 
         # Setup dataset index
         self.idx2meta = []
@@ -113,7 +113,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         # if enable flip_test
         if self.flip_test:
             imgfeat_dir = self.emdb_dir / "imgfeats/emdb_flip"
-            f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt")
+            f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt", weights_only=True)
 
             flipped_bbx_xys = f_img_dict["bbx_xys"].float()  # (L, 3)
             flipped_features = f_img_dict["features"].float()  # (L, 1024)

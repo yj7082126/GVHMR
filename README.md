@@ -52,7 +52,7 @@ To reproduce the 3DPW, RICH, and EMDB results in a single run, use the following
 To train the model, use the following command:
     ```shell
     # The gvhmr_siga24_release.ckpt is trained with 2x4090 for 420 epochs, note that different GPU settings may lead to different results.
-    python -m tools.train exp=gvhmr/mixed/mixed
+    python -m tools.train exp=gvhmr/mixed/mixed2
     ```
     During training, note that we do not employ post-processing as in the test script, so the global metrics results will differ (but should still be good for comparison with baseline methods).
 
