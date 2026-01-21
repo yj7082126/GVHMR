@@ -3,11 +3,13 @@
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
-
 import numpy as np
+import matplotlib.pyplot as plt
 import pillow_heif
 from PIL import ExifTags, Image, TiffTags
 from pillow_heif import register_heif_opener
+import kornia
+import torch
 
 register_heif_opener()
 LOGGER = logging.getLogger(__name__)
@@ -110,3 +112,39 @@ def load_rgb(
         f_px = None
 
     return img, icc_profile, f_px
+
+def get_boundaries_mask(disparity, sobel_threshold=0.3):
+    def sobel_filter(disp, mode="sobel", beta=10.0):
+        sobel_grad = kornia.filters.spatial_gradient(disp, mode=mode, normalized=False)
+        sobel_mag = torch.sqrt(sobel_grad[:, :, 0, Ellipsis] ** 2 + sobel_grad[:, :, 1, Ellipsis] ** 2)
+        alpha = torch.exp(-1.0 * beta * sobel_mag).detach()
+
+        return alpha
+
+    sobel_beta = 10.0
+    normalized_disparity = (disparity - disparity.min()) / (disparity.max() - disparity.min() + 1e-6)
+    return sobel_filter(normalized_disparity, "sobel", beta=sobel_beta) < sobel_threshold
+
+def get_depth_image(depth, min_depth=0.1, max_depth=250.0):
+    inverse_depth = 1 / depth
+    max_inv_depth = min(inverse_depth.max(), 1 / min_depth)
+    min_inv_depth = max(1 / max_depth, inverse_depth.min())
+    inverse_depth_norm = (inverse_depth - min_inv_depth) / (max_inv_depth - min_inv_depth)
+    
+    cmap = plt.get_cmap("turbo")
+    color_depth = (cmap(inverse_depth_norm)[..., :3] * 255).astype(np.uint8)
+    return Image.fromarray(color_depth)
+
+def get_points_3d(depth, K):
+    height, width = depth.shape
+    points2d = torch.stack(torch.meshgrid(
+        torch.arange(width, dtype=torch.float32),
+        torch.arange(height, dtype=torch.float32), 
+    indexing="xy"), -1)  # [h,w,2]
+    
+    points3d = torch.cat([points2d, torch.ones_like(points2d)[..., 0:1]], dim=-1).reshape(height * width, 3)  # [hw,3]
+    points3d = (K.inverse() @ points3d.T * depth.reshape(1, height * width).cpu()).T
+    points3d = points3d.cpu().numpy()
+    points3d = np.concatenate([points3d, np.ones_like(points3d)[..., 0:1]], axis=-1)
+    
+    return points3d

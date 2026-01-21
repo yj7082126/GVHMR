@@ -11,14 +11,20 @@ from pytorch3d.renderer import (
     MeshRenderer,
     MeshRasterizer,
     SoftPhongShader,
+    PointsRasterizationSettings,
+    PointsRasterizer,
+    AlphaCompositor,
 )
-from pytorch3d.structures import Meshes
+from pytorch3d.structures import Meshes, Pointclouds
 from pytorch3d.structures.meshes import join_meshes_as_scene
 from pytorch3d.renderer.cameras import look_at_rotation
 from pytorch3d.transforms import axis_angle_to_matrix
 
 from .renderer_tools import get_colors, checkerboard_geometry
 
+from hmr4d.utils.body_model.utils import smpl_to_openpose
+from hmr4d.utils.open_pose.body import Keypoint
+from hmr4d.utils.open_pose.util import draw_bodypose
 
 colors_str_map = {
     "gray": [0.8, 0.8, 0.8],
@@ -36,7 +42,10 @@ def overlay_image_onto_background(image, mask, bbox, background):
     bbox = bbox[0].int().cpu().numpy().copy()
     roi_image = out_image[bbox[1] : bbox[3], bbox[0] : bbox[2]]
 
-    roi_image[mask] = image[mask]
+    if mask is None:
+        roi_image = image
+    else:
+        roi_image[mask] = image[mask]
     out_image[bbox[1] : bbox[3], bbox[0] : bbox[2]] = roi_image
 
     return out_image
@@ -121,17 +130,19 @@ class Renderer:
         self.create_renderer()
 
     def create_renderer(self):
+        self.rasterizer = MeshRasterizer(
+            raster_settings=RasterizationSettings(
+                image_size=self.image_sizes[0], 
+                blur_radius=1e-5, bin_size=self.bin_size
+            ),
+        )
+        self.shader = SoftPhongShader(
+            device=self.device,
+            lights=self.lights,
+        )
         self.renderer = MeshRenderer(
-            rasterizer=MeshRasterizer(
-                raster_settings=RasterizationSettings(
-                    image_size=self.image_sizes[0], 
-                    blur_radius=1e-5, bin_size=self.bin_size
-                ),
-            ),
-            shader=SoftPhongShader(
-                device=self.device,
-                lights=self.lights,
-            ),
+            rasterizer=self.rasterizer,
+            shader=self.shader,
         )
 
     def create_camera(self, R=None, T=None):
@@ -240,8 +251,27 @@ class Renderer:
 
         return pts_full.detach().cpu(), valid.detach().cpu().to(dtype=torch.float32)
 
+    def render_openpose(self, joints, valids, canvas=None):
+        openpose_idx = smpl_to_openpose(model_type='smplx', use_hands=False, use_face=False,
+                     use_face_contour=False, openpose_format='coco19')
+        
+        if canvas is None:
+            canvas = np.zeros(shape=(self.height, self.width, 3), dtype=np.uint8)
+        for i in range(len(joints)):
+            joint = joints[i, openpose_idx][list(range(0,8))+list(range(9,19))]
+            valid = valids[i, openpose_idx][list(range(0,8))+list(range(9,19))]
+            keypoints=[
+                Keypoint(
+                    x=keypoint[0].item() / float(self.width), 
+                    y=keypoint[1].item() / float(self.height)) 
+                if val else None
+                for keypoint, val in zip(joint, valid)
+            ]
+            canvas = draw_bodypose(canvas, keypoints)
+        return canvas
+            
     def render_mesh(self, vertices, background=None, faces=None, colors=[0.8, 0.8, 0.8], VI=50, 
-                    update_bbox=True, flip=True):
+                    update_bbox=True, flip=True, return_mask=False, return_depth=False):
         if update_bbox:
             self.update_bbox(vertices[::VI], scale=1.2)
         vertices = vertices.unsqueeze(0)
@@ -263,12 +293,18 @@ class Renderer:
 
         materials = Materials(device=self.device, specular_color=(colors,), shininess=0)
 
-        results = self.renderer(mesh, materials=materials, cameras=self.cameras, lights=self.lights)
+        # results = self.renderer(mesh, materials=materials, cameras=self.cameras, lights=self.lights)
+        fragments = self.rasterizer(mesh, cameras=self.cameras)
+        results = self.shader(fragments, mesh, cameras=self.cameras, materials=materials, lights=self.lights)
+
         if flip:
             results = torch.flip(results, [1, 2])
         image = results[0, ..., :3] * 255
         mask = results[0, ..., -1] > 1e-3
-
+        depth = fragments.zbuf.min(dim=-1)[0][0]
+        if flip:
+            depth = torch.flip(depth, [0, 1])
+            
         if background is None:
             background = np.ones((self.height, self.width, 3)).astype(np.uint8) * 255
             
@@ -278,7 +314,22 @@ class Renderer:
             bbox = torch.tensor([[0, 0, self.width, self.height]]).float().to(self.device)
 
         image = overlay_image_onto_background(image, mask, bbox, background.copy())
+        mask_full = overlay_image_onto_background(
+            mask.cpu().numpy().astype(np.uint8) * 255, mask, bbox, background.copy()[:, :, 0]
+        )
+        mask_full = (mask_full[...,None] / 255.).astype(np.float32)
+        depth = overlay_image_onto_background(
+            depth.cpu().numpy(), None, 
+            bbox, np.ones((self.height, self.width)).astype(np.float32) * -1
+        )
+            
         self.reset_bbox()
+        if return_mask:
+            if return_depth:
+                return image, mask_full, depth   
+            return image, mask_full
+        if return_depth:
+            return image, depth
         return image
 
     def render_with_ground(self, verts, colors, cameras=None, lights=None, faces=None):
@@ -316,7 +367,67 @@ class Renderer:
 
         return image
 
+class Renderer_Point:
+    
+    def __init__(self, width, height, K_fullimg, device='cuda'):
+        self.width = width
+        self.height = height
+        self.K_fullimg = K_fullimg
+        self.device = device
 
+        raster_settings = PointsRasterizationSettings(
+            image_size=(height, width), radius=0.008, points_per_pixel=8
+        )
+        self.rasterizer = PointsRasterizer(raster_settings=raster_settings)
+        self.compositor = AlphaCompositor(background_color=[0, 0, 0])
+        
+    def create_camera(self, T_w2c_tmp, in_ndc=False):
+        R = T_w2c_tmp[:, :3, :3]
+        T = T_w2c_tmp[:, :3, 3]
+        focal_length = torch.stack([self.K_fullimg[0, 0], self.K_fullimg[1, 1]], dim=0).unsqueeze(0)
+        principal_point = torch.stack([self.K_fullimg[0, 2], self.K_fullimg[1, 2]], dim=0).unsqueeze(0)
+        image_size = torch.tensor([[self.height, self.width]])
+
+        cameras = PerspectiveCameras(
+            focal_length=focal_length, 
+            principal_point=principal_point,
+            R=R, T=T, in_ndc=in_ndc, 
+            image_size=image_size, 
+            device=self.device
+        )
+        return cameras
+    
+    def create_point_cloud(self, points3d, colors, boundary_mask=None):
+        """
+        :param points3d (B, N, 3)
+        :param colors (B, N, 3), in [0, 1]
+        """
+        if boundary_mask is not None:
+            points3d = points3d[boundary_mask == False]
+            colors = colors[boundary_mask == False]
+
+        point_cloud = Pointclouds(
+            points=[torch.tensor(points3d).to(self.device)], 
+            features=[torch.tensor(colors).to(self.device, dtype=torch.float32)]
+        )
+        return point_cloud
+    
+    def __call__(self, point_cloud, camera):
+        fragments = self.rasterizer(point_cloud, cameras=camera)
+        r = self.rasterizer.raster_settings.radius
+        dists2 = fragments.dists.permute(0, 3, 1, 2)
+        render_rgba = self.compositor(
+            fragments.idx.long().permute(0, 3, 1, 2),
+            1 - dists2 / (r * r),
+            point_cloud.features_packed().permute(1, 0),
+            cameras=camera,
+        )
+
+        render_rgb = (render_rgba.permute(0, 2, 3, 1).detach().cpu().numpy() * 255).astype(np.uint8)[0]
+        render_mask = (fragments.zbuf[0, ..., 0:1] == -1).float()
+        render_mask = (render_mask * 255).cpu().numpy().astype(np.uint8)
+        return render_rgb, render_mask
+    
 def create_meshes(verts, faces, colors):
     """
     :param verts (B, V, 3)
