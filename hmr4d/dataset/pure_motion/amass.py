@@ -22,6 +22,9 @@ class AmassDataset(BaseDataset):
         cam_augmentation="v11",
         random1024=False,  # DEBUG
         limit_size=None,
+        width=768,
+        height=480,
+        f_fullframe=24.0,
     ):
         self.root = Path("inputs/AMASS/hmr4d_support")
         self.motion_frames = motion_frames
@@ -29,7 +32,7 @@ class AmassDataset(BaseDataset):
         self.random1024 = random1024
         self.skip_moyo = skip_moyo
         self.dataset_name = "AMASS"
-        super().__init__(cam_augmentation, limit_size)
+        super().__init__(cam_augmentation, limit_size, width, height, f_fullframe)
 
     def _load_dataset(self):
         filename = self.root / "smplxpose_v2.pth"

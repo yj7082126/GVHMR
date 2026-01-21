@@ -4,6 +4,8 @@ from pathlib import Path
 
 from .utils import *
 from .cam_traj_utils import CameraAugmentorV11
+from .cam_traj_utils_v2 import CameraAugmenterV20
+
 from hmr4d.utils.geo.hmr_cam import create_camera_sensor
 from hmr4d.utils.geo.hmr_global import get_c_rootparam, get_R_c2gv
 from hmr4d.utils.net_utils import get_valid_mask, repeat_to_max_len, repeat_to_max_len_dict
@@ -14,12 +16,15 @@ from hmr4d.utils.smplx_utils import make_smplx
 
 
 class BaseDataset(Dataset):
-    def __init__(self, cam_augmentation, limit_size=None):
+    def __init__(self, cam_augmentation, limit_size=None, width=1000, height=1000, f_fullframe=43.3):
         super().__init__()
         self.cam_augmentation = cam_augmentation
         self.limit_size = limit_size
         self.smplx = make_smplx("supermotion")
         self.smplx_lite = make_smplx("supermotion_smpl24")
+        self.width = width
+        self.height = height
+        self.f_fullframe = f_fullframe  # WHAM default
 
         self._load_dataset()
         self._get_idx2meta()
@@ -64,7 +69,6 @@ class BaseDataset(Dataset):
             "global_orient": global_orient_w,  # (F, 3)
             "transl": transl_w,  # (F, 3)
         }
-
         # Camera trajectory augmentation
         if self.cam_augmentation == "v11":
             # interleave repeat to original length (faster)
@@ -81,14 +85,27 @@ class BaseDataset(Dataset):
                 wis3d = make_wis3d(name="debug_amass")
                 add_motion_as_lines(w_j3d, wis3d, "w_j3d")
 
-            width, height, K_fullimg = create_camera_sensor(1000, 1000, 43.3)  # WHAM
-            focal_length = K_fullimg[0, 0]
+            width, height, K_fullimg = create_camera_sensor(self.width, self.height, self.f_fullframe)  # WHAM
             wham_cam_augmentor = CameraAugmentorV11()
             T_w2c = wham_cam_augmentor(w_j3d, length)  # (F, 4, 4)
 
+        elif self.cam_augmentation == "v20":
+            w_j3d = self.smplx(**smpl_params_w).joints  # (F, 22, 3)
+            print(w_j3d)
+            cam_augmentor = CameraAugmenterV20(
+                self.width, self.height, f_fullframe=self.f_fullframe)
+            T_w2c, R_linspace, t_linspace, cam_meta = cam_augmentor(w_j3d)
+            meta['R_linspace'] = R_linspace
+            meta['t_linspace'] = t_linspace
+            meta['cam_meta'] = cam_meta
+            K_fullimg = cam_augmentor.K_fullimg
         else:
             raise NotImplementedError
 
+        meta['width'] = self.width
+        meta['height'] = self.height
+        meta['K_fullimg'] = K_fullimg
+        
         if False:  # render
             for idx_render in range(10):
                 T_w2c = wham_cam_augmentor(smpl_params_w["transl"])

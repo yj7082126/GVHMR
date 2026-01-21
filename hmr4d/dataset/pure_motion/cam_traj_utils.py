@@ -194,16 +194,20 @@ class CameraAugmentorV11:
         self.f = create_camera_sensor(self.w, self.h, f_fullframe)[2][0, 0]  # use 24mm camera
         self.half_fov_tol = (self.w / 2) / self.f
 
-    def create_rotation_track(self, cam_mat, root, rx_factor=1.0, ry_factor=1.0, rz_factor=1.0):
+    def create_rotation_track(self, cam_mat, root, rx_factor=1.0, ry_factor=1.0, rz_factor=1.0, 
+                              yaw=None, pitch=None, roll=None, **kwargs):
         """Create rotational move for the camera with rotating human"""
         human_mat = matrix.get_TRS(matrix.identity_mat()[None, :3, :3], root)
         cam2human_mat = matrix.get_mat_BtoA(human_mat, cam_mat)
         R = matrix.get_rotation(cam2human_mat)
 
         # Create final camera pose
-        yaw = np.random.normal(scale=ry_factor)
-        pitch = np.random.normal(scale=rx_factor)
-        roll = np.random.normal(scale=rz_factor)
+        if yaw is None:
+            yaw = np.random.normal(scale=ry_factor)
+        if pitch is None:
+            pitch = np.random.normal(scale=rx_factor)
+        if roll is None:
+            roll = np.random.normal(scale=rz_factor)
 
         yaw_rm = axis_angle_to_matrix(torch.tensor([0, yaw, 0]).float())
         pitch_rm = axis_angle_to_matrix(torch.tensor([pitch, 0, 0]).float())
@@ -218,12 +222,15 @@ class CameraAugmentorV11:
         R_move = torch.inverse(R_move)
         return R_move
 
-    def create_translation_track(self, cam_mat, root, t_factor=1.0, tz_bias_factor=0.0):
+    def create_translation_track(self, cam_mat, root, t_factor=1.0, tz_bias_factor=0.0, 
+                                 tx=None, ty=None, tz=None, tz_bias_scale=None, **kwargs):
         """Create translational move for the camera with tracking human"""
         delta_T0 = matrix.get_position(cam_mat)[0] - root[0]
         T_new = matrix.get_position(cam_mat)
 
-        tz_bias = delta_T0.norm(dim=-1) * tz_bias_factor * np.clip(1 + np.random.normal(scale=0.1), 0.67, 1.5)
+        if tz_bias_scale is None:   
+            tz_bias_scale = np.random.normal(scale=0.1)
+        tz_bias = delta_T0.norm(dim=-1) * tz_bias_factor * np.clip(1 + tz_bias_scale, 0.67, 1.5)
 
         T_new[1:] = root[1:] + delta_T0
         cam_mat = matrix.get_TRS(matrix.get_rotation(cam_mat), T_new)
@@ -231,16 +238,19 @@ class CameraAugmentorV11:
         T_new = matrix.get_position(w2c)
 
         # Create final camera position
-        tx = np.random.normal(scale=t_factor)
-        ty = np.random.normal(scale=t_factor)
-        tz = np.random.normal(scale=t_factor) + tz_bias
+        if tx is None:
+            tx = np.random.normal(scale=t_factor)
+        if ty is None:
+            ty = np.random.normal(scale=t_factor)
+        if tz is None:
+            tz = np.random.normal(scale=t_factor) + tz_bias
         Ts = np.array([[0, 0, 0], [tx, ty, tz]])
 
         T_move = noisy_interpolation(Ts, self.l)
         T_move = torch.from_numpy(T_move).float()
         return T_move + T_new
 
-    def add_stepnoise(self, R, T):
+    def add_stepnoise(self, R, T, impulse_type=None, **kwargs):
         w2c = matrix.get_TRS(R, T)
         cam_mat = torch.inverse(w2c)
         R_new = matrix.get_rotation(cam_mat)
@@ -249,12 +259,14 @@ class CameraAugmentorV11:
         L = R_new.shape[0]
         window = 10
 
-        def add_impulse_rot(R_new):
+        def add_impulse_rot(R_new, impulse_angle=None, **kwargs):
             N = np.random.randint(1, self.rot_impluse_n + 1)
-            rx = np.random.normal(scale=self.rotx_impluse_noise, size=N)
-            ry = np.random.normal(scale=self.roty_impluse_noise, size=N)
-            rz = np.random.normal(scale=self.rotz_impluse_noise, size=N)
-            R_impluse_noise = axis_angle_to_matrix(torch.from_numpy(np.array([rx, ry, rz])).float().transpose(0, 1))
+            if impulse_angle is None:
+                rx = np.random.normal(scale=self.rotx_impluse_noise, size=N)
+                ry = np.random.normal(scale=self.roty_impluse_noise, size=N)
+                rz = np.random.normal(scale=self.rotz_impluse_noise, size=N)
+                impulse_angle = np.array([rx, ry, rz])
+            R_impluse_noise = axis_angle_to_matrix(torch.from_numpy(impulse_angle).float().transpose(0, 1))
             R_noise = R_new.clone()
             last_i = 0
             for i in range(N):
@@ -275,12 +287,14 @@ class CameraAugmentorV11:
             R_new = R_noise
             return R_new
 
-        def add_impulse_t(T_new):
+        def add_impulse_t(T_new, impulse_t=None, **kwargs):
             N = np.random.randint(1, self.t_impluse_n + 1)
-            tx = np.random.normal(scale=self.tx_impluse_noise, size=N)
-            ty = np.random.normal(scale=self.ty_impluse_noise, size=N)
-            tz = np.random.normal(scale=self.tz_impluse_noise, size=N)
-            T_impluse_noise = torch.from_numpy(np.array([tx, ty, tz])).float().transpose(0, 1)
+            if impulse_t is None:
+                tx = np.random.normal(scale=self.tx_impluse_noise, size=N)
+                ty = np.random.normal(scale=self.ty_impluse_noise, size=N)
+                tz = np.random.normal(scale=self.tz_impluse_noise, size=N)
+                impulse_t = np.array([tx, ty, tz])
+            T_impluse_noise = torch.from_numpy(impulse_t).float().transpose(0, 1)
             T_noise = T_new.clone()
             last_i = 0
             for i in range(N):
@@ -306,17 +320,19 @@ class CameraAugmentorV11:
             "both": 0.1,
             "pass": 0.5,
         }
-        impulse_type = np.random.choice(list(impulse_type_prob.keys()), p=list(impulse_type_prob.values()))
+        if impulse_type is None:
+            impulse_type = np.random.choice(list(impulse_type_prob.keys()), p=list(impulse_type_prob.values()))
+        
         if impulse_type == "t":
             # impluse translation only
-            T_new = add_impulse_t(T_new)
+            T_new = add_impulse_t(T_new, **kwargs)
         elif impulse_type == "r":
             # impluse rotation only
-            R_new = add_impulse_rot(R_new)
+            R_new = add_impulse_rot(R_new, **kwargs)
         elif impulse_type == "both":
             # impluse rotation and translation
-            R_new = add_impulse_rot(R_new)
-            T_new = add_impulse_t(T_new)
+            R_new = add_impulse_rot(R_new, **kwargs)
+            T_new = add_impulse_t(T_new, **kwargs)
         else:
             assert impulse_type == "pass"
 
@@ -331,7 +347,14 @@ class CameraAugmentorV11:
 
         return R_new, T_new
 
-    def __call__(self, w_j3d, length=120):
+    def __call__(
+        self,
+        w_j3d,
+        length=120,
+        camera_type=None,
+        debug=True,
+        **kwargs,
+    ):
         """
         Args:
             w_j3d: (L, J, 3)
@@ -358,39 +381,43 @@ class CameraAugmentorV11:
             "trackpull": 0.05,
             "static": 0.4,
         }
-        camera_type = np.random.choice(list(camera_type_prob.keys()), p=list(camera_type_prob.values()))
+        if camera_type == None:
+            camera_type = np.random.choice(list(camera_type_prob.keys()), p=list(camera_type_prob.values()))
+        
+        if debug:
+            print(f"[CameraAugmentorV11] camera_type: {camera_type}")
+
         if camera_type == "random":  # random move + add noise on cam
-            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std)
-            t_w2c = create_translation_move(R0_w2c, t0_w2c, length, self.t_xyz_w_std)
-            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c)
+            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std, **kwargs)
+            t_w2c = create_translation_move(R0_w2c, t0_w2c, length, self.t_xyz_w_std, **kwargs)
+            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c, **kwargs)
 
         elif camera_type == "track":  # track human
-            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std_half)
+            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std_half, **kwargs)
             cam_mat = torch.inverse(transform_mat(R0_w2c, t0_w2c)).repeat(length, 1, 1)  # (F, 4, 4)
-            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5)
-            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c)
+            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5, **kwargs)
+            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c, **kwargs)
 
         elif camera_type == "trackrotate":  # track human and rotate
             cam_mat = torch.inverse(transform_mat(R0_w2c, t0_w2c)).repeat(length, 1, 1)  # (F, 4, 4)
-            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5)
+            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5, **kwargs)
             cam_mat = matrix.get_TRS(matrix.get_rotation(cam_mat), t_w2c)
             R_w2c = self.create_rotation_track(cam_mat, w_root, np.pi / 16, np.pi, np.pi / 16)
-            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c)
+            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c, **kwargs)
 
         elif camera_type == "trackpush":  # track human and push close to human
-            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std_half)
+            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std_half, **kwargs)
             # [1/tz_bias_factor, 1] * dist
             cam_mat = torch.inverse(transform_mat(R0_w2c, t0_w2c)).repeat(length, 1, 1)  # (F, 4, 4)
-            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5, (1.0 / (1 + self.tz_bias_factor) - 1))
-            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c)
+            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5, (1.0 / (1 + self.tz_bias_factor) - 1), **kwargs)
+            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c, **kwargs)
 
         elif camera_type == "trackpull":  # track human and pull far from human
-            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std_half)
+            R_w2c = create_rotation_move(R0_w2c, length, self.r_xyz_w_std_half, **kwargs)
             # [1, (tz_bias_factor + 1)] * dist
             cam_mat = torch.inverse(transform_mat(R0_w2c, t0_w2c)).repeat(length, 1, 1)  # (F, 4, 4)
-            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5, self.tz_bias_factor)
-            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c)
-
+            t_w2c = self.create_translation_track(cam_mat, w_root, 0.5, self.tz_bias_factor, **kwargs)
+            R_w2c, t_w2c = self.add_stepnoise(R_w2c, t_w2c, **kwargs)
         else:
             assert camera_type == "static"
             R_w2c = R0_w2c.repeat(length, 1, 1)  # (F, 3, 3)
@@ -423,6 +450,7 @@ class CameraAugmentorV11:
             push_away = z_trg - c_root[max_idx1, 2]
             delta[..., 2] += push_away
         t_w2c += delta
+
 
         T_w2c = transform_mat(R_w2c, t_w2c)  # (F, 4, 4)
         return T_w2c
