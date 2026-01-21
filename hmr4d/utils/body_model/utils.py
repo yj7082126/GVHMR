@@ -1,4 +1,6 @@
 import os
+import pickle as pkl
+from pathlib import Path
 import numpy as np
 import torch
 
@@ -227,3 +229,28 @@ def smpl_to_openpose(model_type='smplx', use_hands=True, use_face=True,
             raise ValueError('Unknown model type: {}'.format(model_type))
     else:
         raise ValueError('Unknown joint format: {}'.format(openpose_format))
+
+def load_hand_faces_and_colors(smplx_faces, mano_smplx_path="inputs/checkpoints/body_models/smplx/MANO_SMPLX_vertex_ids.pkl"):
+    idxs_data = pkl.loads(Path(mano_smplx_path).read_bytes())
+    left_hand_idx, right_hand_idx = idxs_data['left_hand'], idxs_data['right_hand']
+    hand_idxs = np.concatenate([left_hand_idx, right_hand_idx])
+    hand_set = set(hand_idxs.tolist())
+    old_to_new = {old: new for new, old in enumerate(hand_idxs)}
+    hand_faces = []
+    for face in smplx_faces:
+        v0, v1, v2 = face[0].item(), face[1].item(), face[2].item()
+        if all(v in hand_set for v in [v0, v1, v2]):
+            new_face = [old_to_new[v0], old_to_new[v1], old_to_new[v2]]
+            hand_faces.append(new_face)
+    hand_faces = np.array(hand_faces, dtype=np.int64)[None]  # [1, Y, 3]
+    # stitching mesh faces from hands
+    faces_new = np.array([[92, 38, 234], [234, 38, 239], [38, 122, 239], [239, 122, 279], [122, 118, 279],
+                            [279, 118, 215], [118, 117, 215], [215, 117, 214], [117, 119, 214], [214, 119, 121],
+                            [119, 120, 121], [121, 120, 78], [120, 108, 78], [78, 108, 79]]).reshape((1, -1, 3))
+    hand_faces = torch.from_numpy(np.concatenate([hand_faces, faces_new], axis=1)).to(dtype=torch.long)
+
+
+    left_hand_colors = np.tile(np.array([0.5, 1.0, 0.5]).reshape((1, 1, 3)), (1, left_hand_idx.shape[0], 1))
+    right_hand_colors = np.tile(np.array([1.0, 0.5, 0.5]).reshape((1, 1, 3)), (1, right_hand_idx.shape[0], 1))
+    hand_colors = torch.from_numpy(np.concatenate([left_hand_colors, right_hand_colors], axis=1)).to(dtype=torch.float32)
+    return hand_idxs, hand_faces, hand_colors
