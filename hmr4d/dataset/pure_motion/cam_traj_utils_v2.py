@@ -264,6 +264,7 @@ class CameraAugmenterV20:
     
     def __init__(self, w, h, f_fullframe=24):
         self.width, self.height, self.K_fullimg = create_camera_sensor(w, h, f_fullframe)
+        self.half_fov_tol = (self.width / 2) / self.K_fullimg[0, 0]
         self.yaw_std = 5.0
         self.pitch_std = 2.5
         self.roll_std = 0.0
@@ -271,7 +272,11 @@ class CameraAugmenterV20:
         self.ty_std = 0.1
         self.tz_std = 0.25
         self.step_noise_perc = 0.2
-        
+        # === Postprocess === #
+        self.height_max = 4.0
+        self.height_min = -2.0  # -1.5 -> -2.0 allow look upside
+        self.tz_post_min = 0.5
+
     def __call__(self, w_j3d, seed=None, **kwargs):
         nframe = w_j3d.shape[0]
         if seed is not None:
@@ -302,8 +307,28 @@ class CameraAugmenterV20:
         # print(f"Camera translation deltas (tx, ty, tz): ({tx:.2f}, {ty:.2f}, {tz:.2f})")
         t_w2c, t_linspace = create_translation_track(R0_new_w2c, t0_new_w2c, nframe, 
             tx=tx, ty=ty, tz=tz, step_noise_perc=self.step_noise_perc)
-        T_w2c = transform_mat(R_w2c, t_w2c)
 
+        # Recompute t_w2c for better depth and FoV
+        c_j3d = torch.einsum("lij,lkj->lki", R_w2c, w_j3d) + t_w2c[:, None]  # (L, J, 3)
+        delta = torch.zeros_like(t_w2c)  # (L, 3) this will be later added to t_w2c
+        #   - If the person is too close to the camera, push away the person in the z direction
+        c_j3d_min = c_j3d[..., 2].min()  # scalar
+        if c_j3d_min < self.tz_post_min:
+            push_away = self.tz_post_min - c_j3d_min
+            delta[..., 2] += push_away
+            c_j3d[..., 2] += push_away
+        #   - If the person is not in the FoV, push away the person in the z direction
+        c_root = c_j3d[:, 0]  # (L, 3)
+        half_fov = torch.div(c_root[:, :2], c_root[:, 2:]).abs()  # (L, 2), [x/z, y/z]
+        if half_fov.max() > self.half_fov_tol:
+            max_idx1, max_idx2 = torch.where(torch.max(half_fov) == half_fov)
+            max_idx1, max_idx2 = max_idx1[0], max_idx2[0]
+            z_trg = c_root[max_idx1, max_idx2].abs() / self.half_fov_tol  # extreme fitted z in the fov
+            push_away = z_trg - c_root[max_idx1, 2]
+            delta[..., 2] += push_away
+        t_w2c += delta
+        T_w2c = transform_mat(R_w2c, t_w2c)
+        
         meta = {
             'seed': seed,
             'R0_new_w2c': R0_new_w2c,
@@ -312,4 +337,4 @@ class CameraAugmenterV20:
             'tx': tx, 'ty': ty, 'tz': tz,
             'step_noise_perc': self.step_noise_perc,
         }
-        return T_w2c, R_linspace, t_linspace, meta
+        return T_w2c, torch.tensor(R_linspace), torch.tensor(t_linspace), meta

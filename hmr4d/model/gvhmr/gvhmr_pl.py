@@ -48,6 +48,21 @@ class GvhmrPL(pl.LightningModule):
         # SMPLX
         self.smplx = make_smplx("supermotion_v437coco17")
 
+    def _check_finite(self, name, x, batch=None, outputs=None):
+        # if x is None:
+        #     raise RuntimeError(f"{name} is None: {x}")
+        if not torch.isfinite(x).all():
+            # print(outputs)
+            print(outputs['model_output']['pred_context'].size)
+            nan_mask = torch.isnan(outputs['model_output']['pred_context'][:,:,0])
+            nan_inds = np.unique(nan_mask.nonzero().cpu().numpy()[:,0])
+            print(f"nan_ind: {nan_inds}")
+            for nan_ind in nan_inds:
+                weird_batch = batch['meta'][nan_ind]
+                print(f"weird_batch meta: {weird_batch}")
+            # raise RuntimeError(f"{name} is not finite: {x}")
+
+
     def training_step(self, batch, batch_idx):
         B, F = batch["smpl_params_c"]["body_pose"].shape[:2]
 
@@ -139,7 +154,9 @@ class GvhmrPL(pl.LightningModule):
 
         # Forward and get loss
         outputs = self.pipeline.forward(batch, train=True)
-
+        for k, v in outputs.items():
+            if "_loss" in k:
+                self._check_finite(f"loss_terms[{k}]", v, batch, outputs)
         # Log
         log_kwargs = {
             "on_epoch": True,

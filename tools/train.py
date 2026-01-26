@@ -2,6 +2,8 @@ import hydra
 import pytorch_lightning as pl
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.callbacks.checkpoint import Checkpoint
+import torch
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 from hmr4d.utils.pylogger import Log
 from hmr4d.configs import register_store_gvhmr

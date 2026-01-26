@@ -22,9 +22,9 @@ class AmassDataset(BaseDataset):
         cam_augmentation="v11",
         random1024=False,  # DEBUG
         limit_size=None,
-        width=768,
-        height=480,
-        f_fullframe=24.0,
+        width=1000,
+        height=1000,
+        f_fullframe=43.3,
     ):
         self.root = Path("inputs/AMASS/hmr4d_support")
         self.motion_frames = motion_frames

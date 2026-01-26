@@ -90,7 +90,7 @@ class BaseDataset(Dataset):
             T_w2c = wham_cam_augmentor(w_j3d, length)  # (F, 4, 4)
 
         elif self.cam_augmentation == "v20":
-            w_j3d = self.smplx(**smpl_params_w).joints  # (F, 22, 3)
+            w_j3d = self.smplx(**smpl_params_w).joints  # (F, 127, 3)
             # print(w_j3d)
             cam_augmentor = CameraAugmenterV20(
                 self.width, self.height, f_fullframe=self.f_fullframe)
