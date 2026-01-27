@@ -1,6 +1,6 @@
 import torch
 from hmr4d.network.hmr2 import load_hmr2, HMR2
-
+from hmr4d.network.dino import load_dinov3, DINOv3Backbone
 
 from hmr4d.utils.video_io_utils import read_video_np
 import cv2
@@ -58,17 +58,26 @@ def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="vide
 
 
 class Extractor:
-    def __init__(self, tqdm_leave=True):
-        self.extractor: HMR2 = load_hmr2().cuda().eval()
+    def __init__(self, extractor_type='hmr2', tqdm_leave=True):
+        self.extractor_type = extractor_type
+        if extractor_type == 'hmr2':
+            self.extractor: HMR2 = load_hmr2().cuda().eval()
+            self.img_dst_size = 256
+        elif extractor_type == 'dinov3':
+            self.extractor: DINOv3Backbone = load_dinov3().cuda().eval()
+            self.img_dst_size = 512
+        else:
+            raise ValueError(f"Unknown extractor_type: {extractor_type}")
+        
         self.tqdm_leave = tqdm_leave
 
-    def extract_video_features(self, video_path, bbx_xys, img_ds=0.5, rotate=0):
+    def extract_video_features(self, video_path, bbx_xys, img_ds=0.5, rotate=0, batch_size = 16):
         """
         img_ds makes the image smaller, which is useful for faster processing
         """
         # Get the batch
         if isinstance(video_path, str):
-            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds, rotate=rotate)
+            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds, rotate=rotate, img_dst_size=self.img_dst_size)
         else:
             assert isinstance(video_path, torch.Tensor)
             imgs = video_path
@@ -76,9 +85,9 @@ class Extractor:
         # Inference
         F, _, H, W = imgs.shape  # (F, 3, H, W)
         imgs = imgs.cuda()
-        batch_size = 16  # 5GB GPU memory, occupies all CUDA cores of 3090
+          # 5GB GPU memory, occupies all CUDA cores of 3090
         features = []
-        for j in tqdm(range(0, F, batch_size), desc="HMR2 Feature", leave=self.tqdm_leave):
+        for j in tqdm(range(0, F, batch_size), desc=f"{self.extractor_type} Feature", leave=self.tqdm_leave):
             imgs_batch = imgs[j : j + batch_size]
 
             with torch.no_grad():
