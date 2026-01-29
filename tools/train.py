@@ -4,6 +4,8 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.callbacks.checkpoint import Checkpoint
 import torch
 torch.multiprocessing.set_sharing_strategy('file_system')
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 from hmr4d.utils.pylogger import Log
 from hmr4d.configs import register_store_gvhmr
