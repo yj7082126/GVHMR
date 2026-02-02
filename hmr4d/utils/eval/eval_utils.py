@@ -455,3 +455,68 @@ def as_np_array(d):
         return d
     else:
         return np.array(d)
+
+def topk_outlier_frames(metrics_dict, names, k=10, min_metrics_hit=1):
+    """
+    metrics_dict: {metric_name: array-like of shape (n,)}
+    Returns: list of dicts, each like:
+      {
+        "frame": int,
+        "score": float,
+        "reasons": [
+            {"metric": str, "value": float, "rank": int},  # rank 1 = highest
+            ...
+        ]
+      }
+
+    A frame is an "outlier" if it appears in the top-k *highest* values for many metrics.
+    It does NOT need to be top-k for all metrics. "reasons" explains which metrics selected it.
+    """
+    if not metrics_dict:
+        return []
+
+    # Ensure consistent length n
+    names = list(metrics_dict.keys()) if None else names
+    arrays = {n: np.asarray(metrics_dict[n], dtype=float) for n in names}
+    n = len(arrays[names[0]])
+    for name in names[1:]:
+        if len(arrays[name]) != n:
+            raise ValueError(f"Length mismatch: '{name}' has {len(arrays[name])}, expected {n}")
+
+    k_eff = min(k, n)
+
+    # frame -> list of reasons
+    reasons_by_frame = {i: [] for i in range(n)}
+
+    for metric_name, arr in arrays.items():
+        safe = np.where(np.isnan(arr), -np.inf, arr)  # ignore NaNs for top-k
+        topk_idx = np.argpartition(safe, -k_eff)[-k_eff:]                 # unsorted top-k
+        topk_idx = topk_idx[np.argsort(safe[topk_idx])[::-1]]             # sorted desc
+
+        for rank0, frame_idx in enumerate(topk_idx):
+            reasons_by_frame[int(frame_idx)].append({
+                "metric": metric_name,
+                "value": float(arr[frame_idx]),
+                "rank": int(rank0 + 1),   # 1 = highest for this metric
+            })
+
+    # Aggregate frames into outliers with an overall score
+    outliers = []
+    for frame_idx, reasons in reasons_by_frame.items():
+        if len(reasons) < min_metrics_hit:
+            continue
+
+        # Score favors: (a) hitting more metrics, and (b) being higher-ranked within those metrics
+        score = len(reasons) + sum(1.0 / r["rank"] for r in reasons)
+
+        # Sort reasons: best ranks first, then larger values
+        reasons_sorted = sorted(reasons, key=lambda r: (r["rank"], -r["value"]))
+        outliers.append({
+            "frame": frame_idx,
+            "score": float(score),
+            "reasons": reasons_sorted,
+        })
+
+    # Top-k frames by score
+    outliers.sort(key=lambda o: (o["score"], len(o["reasons"])), reverse=True)
+    return outliers[:k]
