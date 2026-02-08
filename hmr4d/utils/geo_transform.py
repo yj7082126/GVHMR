@@ -368,7 +368,7 @@ def compute_T_ayf2az(joints, inverse=False):
         return transform_mat(R_ayf2az, t_ayf2az)
 
 
-def compute_T_ayfz2ay(joints, inverse=False):
+def compute_T_ayfz2ay(joints, inverse=False, hip_j=[1,2], shoulder_j=[16,17]):
     """
     Args:
         joints: (B, J, 3), in the start-frame, ay-coordinate
@@ -381,8 +381,8 @@ def compute_T_ayfz2ay(joints, inverse=False):
     t_ayfz2ay = joints[:, 0, :].detach().clone()
     t_ayfz2ay[:, 1] = 0  # do not modify y
 
-    RL_xz_h = joints[:, 1, [0, 2]] - joints[:, 2, [0, 2]]  # (B, 2), hip point to left side
-    RL_xz_s = joints[:, 16, [0, 2]] - joints[:, 17, [0, 2]]  # (B, 2), shoulder point to left side
+    RL_xz_h = joints[:, hip_j[0], [0, 2]] - joints[:, hip_j[1], [0, 2]]  # (B, 2), hip point to left side
+    RL_xz_s = joints[:, shoulder_j[0], [0, 2]] - joints[:, shoulder_j[1], [0, 2]]  # (B, 2), shoulder point to left side
     RL_xz = RL_xz_h + RL_xz_s
     I_mask = RL_xz.pow(2).sum(-1) < 1e-4  # do not rotate, when can't decided the face direction
     if I_mask.sum() > 0:
@@ -680,7 +680,7 @@ def ransac_vec(vel, min_multiply=20, verbose=False):
 
     return result, inner_mask[ind]
 
-def move_to_start_point_face_z(verts, J_regressor):
+def move_to_start_point_face_z(verts, J_regressor, hip_j=[1,2], shoulder_j=[16,17]):
     "XZ to origin, Start from the ground, Face-Z"
     # position
     verts = verts.clone()  # (L, V, 3)
@@ -688,7 +688,10 @@ def move_to_start_point_face_z(verts, J_regressor):
     offset[1] = verts[:, :, [1]].min()
     verts = verts - offset
     # face direction
-    T_ay2ayfz = compute_T_ayfz2ay(einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"), inverse=True)
+    T_ay2ayfz = compute_T_ayfz2ay(
+        einsum(J_regressor, verts[[0]], "j v, l v i -> l j i"), inverse=True, 
+        hip_j=hip_j, shoulder_j=shoulder_j
+    )
     verts = apply_T_on_points(verts, T_ay2ayfz)
     joints = einsum(J_regressor, verts, "j v, l v i -> l j i")  # (L, J, 3)
 

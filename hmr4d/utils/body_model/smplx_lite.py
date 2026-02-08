@@ -219,7 +219,7 @@ class SmplxLiteV437Coco17(SmplxLite):
         self.posedirs = self.posedirs[:, smplx_vids].clone()  # (K, V', 3)
         self.lbs_weights = self.lbs_weights[smplx_vids].clone()  # (V', J)
 
-    def forward(self, body_pose, betas, global_orient, transl):
+    def forward(self, body_pose, betas, global_orient, transl, return_all_verts=False):
         """
         Returns:
             verts_437: (*, 437, 3)
@@ -230,7 +230,10 @@ class SmplxLiteV437Coco17(SmplxLite):
 
         verts_437 = verts[..., 132:, :].clone()
         joints = einsum(self.smplx2coco17_interestd, verts[..., :132, :], "v j, ... v c -> ... j c")
-        return verts_437, joints
+        if return_all_verts:
+            return verts, joints
+        else:
+            return verts_437, joints
 
 
 class SmplxLiteSmplN24(SmplxLite):

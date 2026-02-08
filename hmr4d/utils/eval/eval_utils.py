@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from scipy.signal import find_peaks, savgol_filter
 
 
 @torch.no_grad()
@@ -520,3 +521,53 @@ def topk_outlier_frames(metrics_dict, names, k=10, min_metrics_hit=1):
     # Top-k frames by score
     outliers.sort(key=lambda o: (o["score"], len(o["reasons"])), reverse=True)
     return outliers[:k]
+
+
+def detect_peak_intervals_thresholded(
+    y,
+    peak_threshold,        # only peaks with value >= this are kept
+    smooth_window=11,
+    polyorder=2,
+    prominence=0.5,
+    distance=10,
+):
+    y = np.asarray(y, dtype=float)
+
+    # Smooth (optional)
+    if smooth_window >= 3 and smooth_window % 2 == 1 and smooth_window < len(y):
+        ys = savgol_filter(y, smooth_window, polyorder)
+    else:
+        ys = y.copy()
+
+    # Only keep peaks above threshold
+    peaks, props = find_peaks(
+        ys,
+        height=peak_threshold,   # key filter
+        prominence=prominence,
+        distance=distance
+    )
+
+    intervals = []
+    for i, p in enumerate(peaks):
+        # nearest local min on the left
+        left = p
+        while left > 1 and not (ys[left-1] <= ys[left] and ys[left-1] <= ys[left-2]):
+            left -= 1
+        left = max(0, left-1)
+
+        # nearest local min on the right
+        right = p
+        while right < len(ys)-2 and not (ys[right+1] <= ys[right] and ys[right+1] <= ys[right+2]):
+            right += 1
+        right = min(len(ys)-1, right+1)
+
+        intervals.append({
+            "start_idx": left,
+            "peak_idx": int(p),
+            "end_idx": right,
+            "peak_val": float(y[p]),
+            "smoothed_peak_val": float(ys[p]),
+            "prominence": float(props["prominences"][i]),
+        })
+
+    return intervals, peaks, ys
