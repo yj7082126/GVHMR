@@ -19,7 +19,7 @@ def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="vide
         imgs = imgs[None]
     elif path_type == "np":
         assert isinstance(input_path, np.ndarray)
-        assert img_ds == 1.0  # this is safe
+        # assert img_ds == 1.0  # this is safe
         imgs = input_path
 
     gt_center = bbx_xys[:, :2]
@@ -71,16 +71,15 @@ class Extractor:
         
         self.tqdm_leave = tqdm_leave
 
-    def extract_video_features(self, video_path, bbx_xys, img_ds=0.5, rotate=0, batch_size = 16):
+    def extract_video_features(self, video_path, bbx_xys, img_ds=0.5, rotate=0, batch_size = 16, path_type='video'):
         """
         img_ds makes the image smaller, which is useful for faster processing
         """
         # Get the batch
-        if isinstance(video_path, str):
-            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds, rotate=rotate, img_dst_size=self.img_dst_size)
-        else:
-            assert isinstance(video_path, torch.Tensor)
+        if isinstance(video_path, torch.Tensor):
             imgs = video_path
+        else:
+            imgs, bbx_xys = get_batch(video_path, bbx_xys, img_ds=img_ds, rotate=rotate, img_dst_size=self.img_dst_size, path_type=path_type)
 
         # Inference
         F, _, H, W = imgs.shape  # (F, 3, H, W)
