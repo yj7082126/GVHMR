@@ -6,6 +6,7 @@ from timm.models.vision_transformer import Mlp
 from typing import Optional, Tuple
 from einops import einsum, rearrange, repeat
 from hmr4d.network.base_arch.embeddings.rotary_embedding import ROPE
+from hmr4d.network.base_arch.embeddings.random_pose_embedding import PositionEmbeddingRandom
 
 
 class RoPEAttention(nn.Module):
@@ -23,12 +24,14 @@ class RoPEAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.proj = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, x, attn_mask=None, key_padding_mask=None):
+    def forward(self, x, context=None, attn_mask=None, key_padding_mask=None):
         # x: (B, L, C)
         # attn_mask: (L, L)
         # key_padding_mask: (B, L)
         B, L, _ = x.shape
-        xq, xk, xv = self.query(x), self.key(x), self.value(x)
+        xq = self.query(x)
+        xk = self.key(x if context is None else context)
+        xv = self.value(x if context is None else context)
 
         xq = xq.reshape(B, L, self.num_heads, -1).transpose(1, 2)
         xk = xk.reshape(B, L, self.num_heads, -1).transpose(1, 2)
@@ -51,7 +54,6 @@ class RoPEAttention(nn.Module):
         output = output.transpose(1, 2).reshape(B, L, -1)  # B, L, C
         output = self.proj(output)  # B, L, C
         return output
-
 
 class EncoderRoPEBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, dropout=0.1, **block_kwargs):
