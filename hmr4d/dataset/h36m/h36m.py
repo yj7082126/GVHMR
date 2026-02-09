@@ -19,7 +19,9 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         original_coord="az",
         motion_frames=120,  # H36M's videos are 25fps and very long
         lazy_load=False,
-        convert_global_pose=False
+        convert_global_pose=False,
+        no_dinov3=True,
+        dinov3_dict_path=None,
     ):
         # Path
         self.root = Path(root)
@@ -28,6 +30,8 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         self.lazy_load = lazy_load
         self.dataset_name = "h36m"
         self.convert_global_pose = convert_global_pose
+        self.no_dinov3 = no_dinov3
+        self.dinov3_dict_path = dinov3_dict_path
         super().__init__()
 
     def _load_dataset(self):
@@ -55,6 +59,45 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
             Log.info(f"[H36M] Finished. Elapsed: {Log.time() - tic:.2f}s")
         else:
             raise NotImplementedError  # "Check BEDLAM-SMPL for lazy_load"
+        self._load_dinov3_dict()
+
+    def _load_dinov3_dict(self):
+        self.dinov3_feat_dict = None
+        if self.no_dinov3 or self.dinov3_dict_path is None:
+            return
+        dinov3_path = Path(self.dinov3_dict_path)
+        if not dinov3_path.exists():
+            Log.info(f"[H36M] DinoV3 dict not found: {dinov3_path}")
+            return
+        raw_dict = torch.load(dinov3_path, weights_only=True)
+        self.dinov3_feat_dict = {}
+        for vname, items in raw_dict.items():
+            frame2feat = {}
+            for item in items:
+                frame2feat[int(item["index"])] = item["feat"].float()
+            self.dinov3_feat_dict[vname] = frame2feat
+        Log.info(f"[H36M] Loaded DinoV3 dict: {dinov3_path} ({len(self.dinov3_feat_dict)} videos)")
+
+    def _get_first_dinov3(self, key_candidates, start, end):
+        if self.dinov3_feat_dict is None:
+            return None, None
+        frame2feat = None
+        for key in key_candidates:
+            if key in self.dinov3_feat_dict:
+                frame2feat = self.dinov3_feat_dict[key]
+                break
+        if frame2feat is None:
+            return None, None
+
+        selected_idx = start if start in frame2feat else None
+        if selected_idx is None:
+            valid_indices = [i for i in frame2feat.keys() if start <= i < end]
+            if len(valid_indices) == 0:
+                return None, None
+            selected_idx = min(valid_indices)
+
+        feat = frame2feat[selected_idx]
+        return feat[None], torch.tensor([selected_idx], dtype=torch.long)
 
     def _get_idx2meta(self):
         # We expect to see the entire sequence during one epoch,
@@ -99,6 +142,10 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         data["K_fullimg"] = f_img_dict["K_fullimg"]
         # data["kp2d"] = self.vitpose[vid][start:end].float()  # (L, 17, 3)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)
+        key_candidates = [vid, Path(vid).stem]
+        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = self._get_first_dinov3(
+            key_candidates, start, end
+        )
 
         # Camera
         data["T_w2c"] = motion["cam_Rt"]  # (4, 4)
@@ -158,6 +205,8 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
             "bbx_xys": bbx_xys,  # (F, 3)
             "K_fullimg": K_fullimg,  # (F, 3, 3)
             "f_imgseq": f_imgseq,  # (F, D)
+            "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (N, 1280, 32, 32) or None
+            "f_dinov3_frame": data["f_dinov3_frame"],  # (N,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
             "mask": {
@@ -165,6 +214,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
                 "vitpose": False,
                 "bbx_xys": True,
                 "f_imgseq": True,
+                "f_dinov3_imgseq": data["f_dinov3_imgseq"] is not None,
                 "spv_incam_only": False,
             },
         }

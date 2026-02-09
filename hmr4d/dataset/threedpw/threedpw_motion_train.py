@@ -18,10 +18,12 @@ from hmr4d.configs import MainStore, builds
 
 
 class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
-    def __init__(self):
+    def __init__(self, no_dinov3=True, dinov3_dict_path=None):
         # Path
         self.hmr4d_support_dir = Path("inputs/3DPW/hmr4d_support")
         self.dataset_name = "3DPW"
+        self.no_dinov3 = no_dinov3
+        self.dinov3_dict_path = dinov3_dict_path
 
         # Setting
         self.min_motion_frames = 60
@@ -42,7 +44,46 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
                 self.refit_smplx[k]["valid_range_list"] = v
 
         self.f_img_folder = self.hmr4d_support_dir / "imgfeats/3dpw_train_smplx_refit"
+        self._load_dinov3_dict()
         Log.info(f"[{self.dataset_name}] Train")
+
+    def _load_dinov3_dict(self):
+        self.dinov3_feat_dict = None
+        if self.no_dinov3 or self.dinov3_dict_path is None:
+            return
+        dinov3_path = Path(self.dinov3_dict_path)
+        if not dinov3_path.exists():
+            Log.info(f"[{self.dataset_name}] DinoV3 dict not found: {dinov3_path}")
+            return
+        raw_dict = torch.load(dinov3_path, weights_only=True)
+        self.dinov3_feat_dict = {}
+        for vname, items in raw_dict.items():
+            frame2feat = {}
+            for item in items:
+                frame2feat[int(item["index"])] = item["feat"].float()
+            self.dinov3_feat_dict[vname] = frame2feat
+        Log.info(f"[{self.dataset_name}] Loaded DinoV3 dict: {dinov3_path} ({len(self.dinov3_feat_dict)} videos)")
+
+    def _get_first_dinov3(self, key_candidates, start, end):
+        if self.dinov3_feat_dict is None:
+            return None, None
+        frame2feat = None
+        for key in key_candidates:
+            if key in self.dinov3_feat_dict:
+                frame2feat = self.dinov3_feat_dict[key]
+                break
+        if frame2feat is None:
+            return None, None
+
+        selected_idx = start if start in frame2feat else None
+        if selected_idx is None:
+            valid_indices = [i for i in frame2feat.keys() if start <= i < end]
+            if len(valid_indices) == 0:
+                return None, None
+            selected_idx = min(valid_indices)
+
+        feat = frame2feat[selected_idx]
+        return feat[None], torch.tensor([selected_idx], dtype=torch.long)
 
     def _get_idx2meta(self):
         # We expect to see the entire sequence during one epoch,
@@ -92,6 +133,10 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         data["f_imgseq"] = f_img_dict["features"][start:end].float()  # (F, 3)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
+        key_candidates = [vid, Path(vid).stem]
+        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = self._get_first_dinov3(
+            key_candidates, start, end
+        )
 
         return data
 
@@ -114,6 +159,8 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
             "bbx_xys": data["bbx_xys"],  # (F, 3)
             "K_fullimg": K_fullimg,  # (F, 3, 3)
             "f_imgseq": data["f_imgseq"],  # (F, D)
+            "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (N, 1280, 32, 32) or None
+            "f_dinov3_frame": data["f_dinov3_frame"],  # (N,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
             "mask": {
@@ -121,6 +168,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
                 "vitpose": False,
                 "bbx_xys": True,
                 "f_imgseq": True,
+                "f_dinov3_imgseq": data["f_dinov3_imgseq"] is not None,
                 "spv_incam_only": True,
             },
         }

@@ -25,7 +25,11 @@ def collate_fn(batch):
         if k.startswith("meta"):  # data information, do not batch
             return_dict[k] = [d[k] for d in batch]
         else:
-            return_dict[k] = default_collate([d[k] for d in batch])
+            values = [d[k] for d in batch]
+            if any(v is None for v in values):
+                return_dict[k] = None if all(v is None for v in values) else values
+            else:
+                return_dict[k] = default_collate(values)
     return_dict["B"] = len(batch)
     return return_dict
 

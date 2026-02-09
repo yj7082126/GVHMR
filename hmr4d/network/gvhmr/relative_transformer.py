@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from einops import einsum, rearrange, repeat
 from hmr4d.configs import MainStore, builds
 
-from hmr4d.network.base_arch.transformer.encoder_rope import EncoderRoPEBlock
+from hmr4d.network.base_arch.transformer.encoder_rope import EncoderRoPEBlock, EncoderRoPEwithCABlock
 from hmr4d.network.base_arch.transformer.layer import zero_module
 
 from hmr4d.utils.net_utils import length_to_mask
@@ -49,6 +49,7 @@ class NetworkEncoderRoPE(nn.Module):
         self.latent_dim = latent_dim
         self.num_layers = num_layers
         self.num_heads = num_heads
+        self.mlp_ratio = mlp_ratio
         self.dropout = dropout
 
         # ===== build model ===== #
@@ -185,10 +186,123 @@ class NetworkEncoderRoPE(nn.Module):
         return output
 
 
+class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.blocks = nn.ModuleList(
+            [
+                EncoderRoPEwithCABlock(
+                    self.latent_dim,
+                    self.num_heads,
+                    mlp_ratio=self.mlp_ratio,
+                    dropout=self.dropout,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+
+    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None):
+        """
+        Cross-attention variant:
+        - self-attend on motion tokens x
+        - cross-attend to image-sequence context tokens
+        """
+        B, L, J, C = obs.shape
+        assert J == 17 and C == 3
+
+        # Main token from observation (2D pose)
+        obs = obs.clone()
+        visible_mask = obs[..., [2]] > 0.5  # (B, L, J, 1)
+        obs[~visible_mask[..., 0]] = 0  # set low-conf to all zeros
+        f_obs = self.learned_pos_linear(obs[..., :2])  # (B, L, J, 32)
+        f_obs = f_obs * visible_mask + self.learned_pos_params.repeat(B, L, 1, 1) * ~visible_mask
+        x = self.embed_noisyobs(f_obs.view(B, L, -1))  # (B, L, J*32) -> (B, L, C)
+
+        # Add non-image conditions to x, and keep image features as CA context.
+        f_to_add = [self.cliffcam_embedder(f_cliffcam)]
+        if hasattr(self, "cam_angvel_embedder"):
+            f_to_add.append(self.cam_angvel_embedder(f_cam_angvel))
+        for f_delta in f_to_add:
+            x = x + f_delta
+
+        context = None
+        if f_imgseq is not None and hasattr(self, "imgseq_embedder"):
+            context = self.imgseq_embedder(f_imgseq)
+        else:
+            # Fallback to self-context so the module remains callable without image features.
+            context = x
+
+        # Setup length and make padding mask
+        assert B == length.size(0)
+        pmask = ~length_to_mask(length, L)  # (B, L)
+        L_ctx = context.shape[1]
+        if L_ctx == L:
+            pmask_ctx = pmask
+        else:
+            ctx_length = torch.clamp(length, max=L_ctx)
+            pmask_ctx = ~length_to_mask(ctx_length, L_ctx)
+
+        if L > self.max_len:
+            attnmask = torch.ones((L, L), device=x.device, dtype=torch.bool)
+            for i in range(L):
+                min_ind = max(0, i - self.max_len // 2)
+                max_ind = min(L, i + self.max_len // 2)
+                max_ind = max(self.max_len, max_ind)
+                min_ind = min(L - self.max_len, min_ind)
+                attnmask[i, min_ind:max_ind] = False
+        else:
+            attnmask = None
+
+        # Let each query position see all valid image-context tokens by default.
+        memory_mask = None
+
+        # Transformer
+        for block in self.blocks:
+            x = block(
+                x,
+                context=context,
+                attn_mask=attnmask,
+                tgt_key_padding_mask=pmask,
+                memory_mask=memory_mask,
+                memory_key_padding_mask=pmask_ctx,
+            )
+
+        # Output
+        sample = self.final_layer(x)  # (B, L, C)
+        if self.avgbeta:
+            betas = (sample[..., 126:136] * (~pmask[..., None])).sum(1) / length[:, None]  # (B, C)
+            betas = repeat(betas, "b c -> b l c", l=L)
+            sample = torch.cat([sample[..., :126], betas, sample[..., 136:]], dim=-1)
+
+        # Output (extra)
+        pred_cam = None
+        if self.pred_cam_head:
+            pred_cam = self.pred_cam_head(x)
+            pred_cam = pred_cam * self.pred_cam_std + self.pred_cam_mean
+            torch.clamp_min_(pred_cam[..., 0], 0.25)
+
+        static_conf_logits = None
+        if self.static_conf_head:
+            static_conf_logits = self.static_conf_head(x)
+
+        output = {
+            "pred_context": x,
+            "pred_x": sample,
+            "pred_cam": pred_cam,
+            "static_conf_logits": static_conf_logits,
+        }
+        return output
+
+
 # Add to MainStore
 group_name = "network/gvhmr"
 MainStore.store(
     name="relative_transformer",
     node=builds(NetworkEncoderRoPE, populate_full_signature=True),
+    group=group_name,
+)
+MainStore.store(
+    name="relative_transformer_ca",
+    node=builds(NetworkEncoderRoPEwithCA, populate_full_signature=True),
     group=group_name,
 )

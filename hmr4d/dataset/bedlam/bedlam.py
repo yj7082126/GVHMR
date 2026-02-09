@@ -32,12 +32,16 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         mid_indices=["all60", "maxspan60"],
         lazy_load=True,  # Load from disk when needed
         random1024=False,  # Faster loading for debugging
+        no_dinov3=True,
+        dinov3_dict_path=None,
     ):
         self.root = Path("inputs/BEDLAM/hmr4d_support")
         self.min_motion_frames = 60
         self.max_motion_frames = 120
         self.lazy_load = lazy_load
         self.random1024 = random1024
+        self.no_dinov3 = no_dinov3
+        self.dinov3_dict_path = dinov3_dict_path
 
         # speficify mid_index to handle
         if not isinstance(mid_indices, list):
@@ -76,6 +80,45 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         else:
             self.motion_files = torch.load(self.root / "smplpose_v2.pth", weights_only=True)
         Log.info(f"[BEDLAM] Motion files loaded. Elapsed: {time() - tic:.2f}s")
+        self._load_dinov3_dict()
+
+    def _load_dinov3_dict(self):
+        self.dinov3_feat_dict = None
+        if self.no_dinov3 or self.dinov3_dict_path is None:
+            return
+        dinov3_path = Path(self.dinov3_dict_path)
+        if not dinov3_path.exists():
+            Log.info(f"[BEDLAM] DinoV3 dict not found: {dinov3_path}")
+            return
+        raw_dict = torch.load(dinov3_path, weights_only=True)
+        self.dinov3_feat_dict = {}
+        for vname, items in raw_dict.items():
+            frame2feat = {}
+            for item in items:
+                frame2feat[int(item["index"])] = item["feat"].float()
+            self.dinov3_feat_dict[vname] = frame2feat
+        Log.info(f"[BEDLAM] Loaded DinoV3 dict: {dinov3_path} ({len(self.dinov3_feat_dict)} videos)")
+
+    def _get_first_dinov3(self, key_candidates, start, end):
+        if self.dinov3_feat_dict is None:
+            return None, None
+        frame2feat = None
+        for key in key_candidates:
+            if key in self.dinov3_feat_dict:
+                frame2feat = self.dinov3_feat_dict[key]
+                break
+        if frame2feat is None:
+            return None, None
+
+        selected_idx = start if start in frame2feat else None
+        if selected_idx is None:
+            valid_indices = [i for i in frame2feat.keys() if start <= i < end]
+            if len(valid_indices) == 0:
+                return None, None
+            selected_idx = min(valid_indices)
+
+        feat = frame2feat[selected_idx]
+        return feat[None], torch.tensor([selected_idx], dtype=torch.long)
 
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
@@ -122,6 +165,12 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         data["bbx_xys"] = f_img_dict["bbx_xys"][start_mapped:end_mapped].float()  # (L, 4)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
+        vname = mid2vname(mid)
+        featname = mid2featname(mid)
+        key_candidates = [mid, vname, Path(vname).stem, featname, Path(featname).stem]
+        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = self._get_first_dinov3(
+            key_candidates, start, end
+        )
 
         return data
 
@@ -165,6 +214,8 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             "bbx_xys": data["bbx_xys"],  # (F, 3)
             "K_fullimg": data["cam_int"],  # (F, 3, 3)
             "f_imgseq": data["f_imgseq"],  # (F, D)
+            "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (F, 1280, 32, 32) or None
+            "f_dinov3_frame": data["f_dinov3_frame"],  # (F,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
             "mask": {
@@ -172,6 +223,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
                 "vitpose": False,
                 "bbx_xys": True,
                 "f_imgseq": True,
+                "f_dinov3_imgseq": data["f_dinov3_imgseq"] is not None,
                 "spv_incam_only": False,
             },
         }

@@ -174,6 +174,8 @@ class BaseDataset(Dataset):
             "bbx_xys": torch.zeros((length, 3)),  # (F, 3)  # NOTE: a placeholder
             "K_fullimg": K_fullimg,  # (F, 3, 3)
             "f_imgseq": torch.zeros((length, 1024)),  # (F, D)  # NOTE: a placeholder
+            "f_dinov3_imgseq": None,  # (N, 1280, 32, 32) or None
+            "f_dinov3_frame": None,  # (N,) or None
             "kp2d": torch.zeros(length, 17, 3),  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
             "mask": {
@@ -181,6 +183,7 @@ class BaseDataset(Dataset):
                 "vitpose": False,
                 "bbx_xys": False,
                 "f_imgseq": False,
+                "f_dinov3_imgseq": False,
                 "spv_incam_only": False,
             },
         }
