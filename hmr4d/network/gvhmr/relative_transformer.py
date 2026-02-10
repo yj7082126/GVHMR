@@ -222,6 +222,9 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
         f_to_add = [self.cliffcam_embedder(f_cliffcam)]
         if hasattr(self, "cam_angvel_embedder"):
             f_to_add.append(self.cam_angvel_embedder(f_cam_angvel))
+        if f_imgseq is not None and hasattr(self, "imgseq_embedder"):
+            f_to_add.append(self.imgseq_embedder(f_imgseq))
+            
         for f_delta in f_to_add:
             x = x + f_delta
 

@@ -28,7 +28,7 @@ defaults:
     - override /network: gvhmr/relative_transformer_ca
 
 exp_name_base: crossattn
-exp_name_var: "_hmr_v1"
+exp_name_var: "_hmr_v2"
 exp_name: ${exp_name_base}${exp_name_var}
 data_name: mocap_mixed_v2_ca
 
@@ -63,7 +63,7 @@ pl_trainer:
     gradient_clip_val: 0.5
     max_epochs: 500
     check_val_every_n_epoch: 10
-    devices: 4
+    devices: 2
 
 logger:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
