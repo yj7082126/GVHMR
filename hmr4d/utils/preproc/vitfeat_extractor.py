@@ -86,7 +86,7 @@ class Extractor:
         imgs = imgs.cuda()
           # 5GB GPU memory, occupies all CUDA cores of 3090
         features = []
-        for j in tqdm(range(0, F, batch_size), desc=f"{self.extractor_type} Feature", leave=self.tqdm_leave):
+        for j in range(0, F, batch_size):
             imgs_batch = imgs[j : j + batch_size]
 
             with torch.no_grad():

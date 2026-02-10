@@ -39,6 +39,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         self.min_motion_frames = 60
         self.max_motion_frames = 120
         self.lazy_load = lazy_load
+        self.dataset_name = "bedlam"
         self.random1024 = random1024
         self.no_dinov3 = no_dinov3
         self.dinov3_dict_path = dinov3_dict_path
@@ -122,7 +123,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
 
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
-        self.idx2meta = list(self.mid_to_valid_range.keys())
+        self.idx2meta = sorted(list(self.mid_to_valid_range.keys()))
         Log.info(f"[BEDLAM] {len(self.idx2meta)} sequences. ")
 
     def _load_data(self, idx):
@@ -147,7 +148,8 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         end = start + length
         data["start_end"] = (start, end)
         data["length"] = length
-
+        data["meta"] = {"data_name": self.dataset_name, "idx": idx, "vid": mid, "start_end": (start, end)}
+        
         # Update data to a subset
         for k, v in data.items():
             if isinstance(v, torch.Tensor) and len(v.shape) > 1 and k != "skeleton":
@@ -205,7 +207,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         # Returns: do not forget to make it batchable! (last lines)
         max_len = self.max_motion_frames
         return_data = {
-            "meta": {"data_name": "bedlam", "idx": idx},
+            "meta": data["meta"],
             "length": length,
             "smpl_params_c": smpl_params_c,
             "smpl_params_w": smpl_params_w,
