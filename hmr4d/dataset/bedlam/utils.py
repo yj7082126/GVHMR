@@ -11,7 +11,7 @@ def mid2vname(mid):
     # -> vname: 20221011_1_250_batch01hand_closeup_suburb_a/seq_000001.mp4
     scene = mid.split("/")[-3]
     seq = mid.split("/")[-1].split("-")[0]
-    vname = f"{scene}/{seq}"
+    vname = f"{scene}/mp4/{seq}"
     return vname
 
 
