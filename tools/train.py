@@ -53,6 +53,25 @@ def train(cfg: DictConfig) -> None:
         cfg.pl_trainer = {**cfg.pl_trainer, "enable_checkpointing": False}
     logger = hydra.utils.instantiate(cfg.logger, _recursive_=False)
 
+    # Multi-GPU safety for models with conditional branches (e.g., optional image encoder paths).
+    # If strategy is not explicitly configured, default to find_unused_parameters=True.
+    if cfg.task == "fit":
+        devices = cfg.pl_trainer.get("devices", 1)
+        if isinstance(devices, (list, tuple)):
+            num_devices = len(devices)
+        else:
+            try:
+                num_devices = int(devices)
+            except Exception:
+                num_devices = 1
+        strategy = cfg.pl_trainer.get("strategy", None)
+        if num_devices > 1 and strategy is None:
+            cfg.pl_trainer = {**cfg.pl_trainer, "strategy": "ddp_find_unused_parameters_true"}
+            Log.warning(
+                "No distributed strategy set for multi-GPU fit; defaulting to "
+                "strategy=ddp_find_unused_parameters_true."
+            )
+
     # PL-Trainer
     if cfg.task == "test":
         Log.info("Test mode forces full-precision.")
