@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import torch
+import cv2
 from hmr4d.utils.pylogger import Log
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle
 from time import time
@@ -8,8 +9,6 @@ from time import time
 from hmr4d.configs import MainStore, builds
 from hmr4d.utils.smplx_utils import make_smplx
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
-from hmr4d.utils.vis.renderer_utils import simple_render_mesh_background
-from hmr4d.utils.video_io_utils import read_video_np, save_video
 
 import hmr4d.utils.matrix as matrix
 from hmr4d.utils.net_utils import get_valid_mask, repeat_to_max_len, repeat_to_max_len_dict
@@ -17,6 +16,7 @@ from hmr4d.dataset.imgfeat_motion.base_dataset import ImgfeatMotionDatasetBase
 from hmr4d.dataset.bedlam.utils import mid2featname, mid2vname
 from hmr4d.utils.geo_transform import compute_cam_angvel, apply_T_on_points
 from hmr4d.utils.geo.hmr_global import get_T_w2c_from_wcparams, get_c_rootparam, get_R_c2gv
+from hmr4d.network.hmr2.utils.preproc import crop_and_resize
 
 
 class BedlamDatasetV2(ImgfeatMotionDatasetBase):
@@ -32,17 +32,19 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         mid_indices=["all60", "maxspan60"],
         lazy_load=True,  # Load from disk when needed
         random1024=False,  # Faster loading for debugging
-        no_dinov3=True,
-        dinov3_dict_path=None,
+        load_image=False,
     ):
         self.root = Path("inputs/BEDLAM/hmr4d_support")
+        self.video_root = Path("/data/datasets/bedlam_download")
+        
         self.min_motion_frames = 60
         self.max_motion_frames = 120
         self.lazy_load = lazy_load
         self.dataset_name = "bedlam"
         self.random1024 = random1024
-        self.no_dinov3 = no_dinov3
-        self.dinov3_dict_path = dinov3_dict_path
+        self.load_image = load_image
+        self.image_crop_size = 512
+        self.mid_to_saved_frames = {}
 
         # speficify mid_index to handle
         if not isinstance(mid_indices, list):
@@ -81,45 +83,57 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         else:
             self.motion_files = torch.load(self.root / "smplpose_v2.pth", weights_only=True)
         Log.info(f"[BEDLAM] Motion files loaded. Elapsed: {time() - tic:.2f}s")
-        self._load_dinov3_dict()
 
-    def _load_dinov3_dict(self):
-        self.dinov3_feat_dict = None
-        if self.no_dinov3 or self.dinov3_dict_path is None:
-            return
-        dinov3_path = Path(self.dinov3_dict_path)
-        if not dinov3_path.exists():
-            Log.info(f"[BEDLAM] DinoV3 dict not found: {dinov3_path}")
-            return
-        raw_dict = torch.load(dinov3_path, weights_only=True)
-        self.dinov3_feat_dict = {}
-        for vname, items in raw_dict.items():
-            frame2feat = {}
-            for item in items:
-                frame2feat[int(item["index"])] = item["feat"].float()
-            self.dinov3_feat_dict[vname] = frame2feat
-        Log.info(f"[BEDLAM] Loaded DinoV3 dict: {dinov3_path} ({len(self.dinov3_feat_dict)} videos)")
+    def _get_saved_frame_dir(self, mid):
+        vname = mid2vname(mid)  # {scene}/{seq}.mp4
+        video_path = self.video_root / vname
+        return video_path.parent.parent / "vis" / video_path.stem
 
-    def _get_first_dinov3(self, key_candidates, start, end):
-        if self.dinov3_feat_dict is None:
-            return None, None
-        frame2feat = None
-        for key in key_candidates:
-            if key in self.dinov3_feat_dict:
-                frame2feat = self.dinov3_feat_dict[key]
-                break
-        if frame2feat is None:
-            return None, None
+    def _get_saved_frame_indices(self, mid):
+        if mid in self.mid_to_saved_frames:
+            return self.mid_to_saved_frames[mid]
 
-        selected_idx = start if start in frame2feat else None
-        if selected_idx is None:
-            valid_indices = [i for i in frame2feat.keys() if start <= i < end]
-            if len(valid_indices) == 0:
-                return None, None
-            selected_idx = min(valid_indices)
+        frame_dir = self._get_saved_frame_dir(mid)
+        if not frame_dir.exists():
+            self.mid_to_saved_frames[mid] = []
+            return self.mid_to_saved_frames[mid]
 
-        feat = frame2feat[selected_idx]
-        return feat[None], torch.tensor([selected_idx], dtype=torch.long)
+        frame_indices = []
+        for fp in frame_dir.glob(f"*.jpg"):
+            try:
+                frame_indices.append(int(fp.stem))
+            except ValueError:
+                continue
+        frame_indices = sorted(frame_indices)
+        self.mid_to_saved_frames[mid] = frame_indices
+        return frame_indices
+
+    def _load_aligned_images(self, mid, frame_indices, bbx_xys):
+        if not self.load_image:
+            return None
+
+        if len(frame_indices) != len(bbx_xys):
+            Log.info(f"[BEDLAM] frame/bbx mismatch: {len(frame_indices)} vs {len(bbx_xys)} for {mid}")
+            return None
+
+        frame_dir = self._get_saved_frame_dir(mid)
+        crops = []
+        for frame_idx, bbx in zip(frame_indices, bbx_xys):
+            frame_path = frame_dir / f"{int(frame_idx):05d}.jpg"
+            frame_bgr = cv2.imread(str(frame_path))
+            if frame_bgr is None:
+                Log.info(f"[BEDLAM] saved frame not found/readable: {frame_path}")
+                return None
+            frame = frame_bgr[..., ::-1]  # BGR -> RGB
+            img_crop, _ = crop_and_resize(
+                frame,
+                bbx[:2].cpu().numpy(),
+                float(bbx[2].item()),
+                dst_size=self.image_crop_size,
+                enlarge_ratio=1.0,
+            )
+            crops.append(img_crop)
+        return torch.from_numpy(np.stack(crops))
 
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
@@ -142,9 +156,21 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             start = range1
             length = mlength
         else:
-            effect_max_motion_len = min(max_motion_len, mlength)
-            length = np.random.randint(min_motion_len, effect_max_motion_len + 1)  # [low, high)
-            start = np.random.randint(range1, range2 - length + 1)
+            # Pick start from pre-saved frame images (e.g. 10 frames per video) instead of random range sampling.
+            saved_starts = self._get_saved_frame_indices(mid)
+            saved_starts = [s for s in saved_starts if range1 <= s < range1 + 10]
+            if len(saved_starts) > 0:
+                start = int(np.random.choice(saved_starts))
+            else:
+                # Fallback to valid range start if saved frames are missing.
+                start = range1
+                Log.info(f"[BEDLAM] no saved frames for {mid}, fallback start={start}")
+
+            max_len_from_start = max(1, min(max_motion_len, range2 - start))
+            if max_len_from_start < min_motion_len:
+                length = max_len_from_start
+            else:
+                length = int(np.random.randint(min_motion_len, max_len_from_start + 1))  # [low, high)
         end = start + length
         data["start_end"] = (start, end)
         data["length"] = length
@@ -167,12 +193,8 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         data["bbx_xys"] = f_img_dict["bbx_xys"][start_mapped:end_mapped].float()  # (L, 4)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
-        vname = mid2vname(mid)
-        featname = mid2featname(mid)
-        key_candidates = [mid, vname, Path(vname).stem, featname, Path(featname).stem]
-        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = self._get_first_dinov3(
-            key_candidates, start, end
-        )
+        data["image"] = self._load_aligned_images(mid, [start], data["bbx_xys"][0:1])
+        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data
 
@@ -216,6 +238,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             "bbx_xys": data["bbx_xys"],  # (F, 3)
             "K_fullimg": data["cam_int"],  # (F, 3, 3)
             "f_imgseq": data["f_imgseq"],  # (F, D)
+            "image": data["image"],  # (F, H, W, 3) or None
             "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (F, 1280, 32, 32) or None
             "f_dinov3_frame": data["f_dinov3_frame"],  # (F,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
@@ -225,69 +248,12 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
                 "vitpose": False,
                 "bbx_xys": True,
                 "f_imgseq": True,
+                "image": data["image"] is not None,
                 "f_dinov3_imgseq": data["f_dinov3_imgseq"] is not None,
                 "spv_incam_only": False,
             },
         }
-
-        if False:  # check transformation, wis3d: sampled motion (global, incam)
-            wis3d = make_wis3d(name="debug-data-bedlam")
-            smplx = make_smplx("supermotion")
-
-            # global
-            smplx_out = smplx(**smpl_params_w)
-            w_gt_joints = smplx_out.joints
-            add_motion_as_lines(w_gt_joints, wis3d, name="w-gt_joints")
-
-            # incam
-            smplx_out = smplx(**smpl_params_c)
-            c_gt_joints = smplx_out.joints
-            add_motion_as_lines(c_gt_joints, wis3d, name="c-gt_joints")
-
-            # Check transformation works correctly
-            print("T_w2c", (apply_T_on_points(w_gt_joints, T_w2c) - c_gt_joints).abs().max())
-            R_c, t_c = get_c_rootparam(
-                smpl_params_w["global_orient"], smpl_params_w["transl"], T_w2c, data["skeleton"][0]
-            )
-            print("transl_c", (t_c - smpl_params_c["transl"]).abs().max())
-            R_diff = matrix_to_axis_angle(
-                (axis_angle_to_matrix(R_c) @ axis_angle_to_matrix(smpl_params_c["global_orient"]).transpose(-1, -2))
-            ).norm(dim=-1)
-            print("global_orient_c", R_diff.abs().max())  # < 1e-6
-
-            skeleton_beta = smplx.get_skeleton(smpl_params_c["betas"])
-            print("Skeleton", (skeleton_beta[0] - data["skeleton"]).abs().max())  # (1.2e-7)
-
-        if False:  # cam-overlay
-            smplx = make_smplx("supermotion")
-
-            # *. original bedlam param
-            # mid = self.idx2meta[idx]
-            # video_path = "-".join(mid.replace("bedlam_data/", "inputs/bedlam/").split("-")[:-1])
-            # npz_file = "inputs/bedlam/processed_labels/20221024_3-10_100_batch01handhair_static_highSchoolGym.npz"
-            # params = np.load(npz_file, allow_pickle=True)
-            # mid2index = {}
-            # for j in tqdm(range(len(params["video_name"]))):
-            #     k = params["video_name"][j] + "-" + params["sub"][j]
-            #     mid2index[k] = j
-            # betas = params['shape'][mid2index[mid]][:length]
-            # global_orient_incam = torch.from_numpy(params['pose_cam'][121][:, :3])
-            # body_pose = torch.from_numpy(params['pose_cam'][121][:, 3:66])
-            # transl_incam = torch.from_numpy(params["trans_cam"][121])
-            smplx_out = smplx(**smpl_params_c)
-
-            # ----- Render Overlay ----- #
-            mid = self.idx2meta[idx]
-            images = read_video_np(self.root / "videos" / mid2vname(mid), data["start_end"][0], data["start_end"][1])
-            render_dict = {
-                "K": data["cam_int"][:1],  # only support batch-size 1
-                "faces": smplx.faces,
-                "verts": smplx_out.vertices,
-                "background": images,
-            }
-            img_overlay = simple_render_mesh_background(render_dict)
-            save_video(img_overlay, "tmp.mp4", crf=23)
-
+        
         # Batchable
         return_data["smpl_params_c"] = repeat_to_max_len_dict(return_data["smpl_params_c"], max_len)
         return_data["smpl_params_w"] = repeat_to_max_len_dict(return_data["smpl_params_w"], max_len)
@@ -303,3 +269,4 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
 group_name = "train_datasets/imgfeat_bedlam"
 MainStore.store(name="v2", node=builds(BedlamDatasetV2), group=group_name)
 MainStore.store(name="v2_random1024", node=builds(BedlamDatasetV2, random1024=True), group=group_name)
+MainStore.store(name="v2_with_image", node=builds(BedlamDatasetV2, load_image=True), group=group_name)

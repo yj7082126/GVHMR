@@ -18,12 +18,10 @@ from hmr4d.configs import MainStore, builds
 
 
 class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
-    def __init__(self, no_dinov3=True, dinov3_dict_path=None):
+    def __init__(self):
         # Path
         self.hmr4d_support_dir = Path("inputs/3DPW/hmr4d_support")
         self.dataset_name = "3DPW"
-        self.no_dinov3 = no_dinov3
-        self.dinov3_dict_path = dinov3_dict_path
 
         # Setting
         self.min_motion_frames = 60
@@ -44,46 +42,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
                 self.refit_smplx[k]["valid_range_list"] = v
 
         self.f_img_folder = self.hmr4d_support_dir / "imgfeats/3dpw_train_smplx_refit"
-        self._load_dinov3_dict()
         Log.info(f"[{self.dataset_name}] Train")
-
-    def _load_dinov3_dict(self):
-        self.dinov3_feat_dict = None
-        if self.no_dinov3 or self.dinov3_dict_path is None:
-            return
-        dinov3_path = Path(self.dinov3_dict_path)
-        if not dinov3_path.exists():
-            Log.info(f"[{self.dataset_name}] DinoV3 dict not found: {dinov3_path}")
-            return
-        raw_dict = torch.load(dinov3_path, weights_only=True)
-        self.dinov3_feat_dict = {}
-        for vname, items in raw_dict.items():
-            frame2feat = {}
-            for item in items:
-                frame2feat[int(item["index"])] = item["feat"].float()
-            self.dinov3_feat_dict[vname] = frame2feat
-        Log.info(f"[{self.dataset_name}] Loaded DinoV3 dict: {dinov3_path} ({len(self.dinov3_feat_dict)} videos)")
-
-    def _get_first_dinov3(self, key_candidates, start, end):
-        if self.dinov3_feat_dict is None:
-            return None, None
-        frame2feat = None
-        for key in key_candidates:
-            if key in self.dinov3_feat_dict:
-                frame2feat = self.dinov3_feat_dict[key]
-                break
-        if frame2feat is None:
-            return None, None
-
-        selected_idx = start if start in frame2feat else None
-        if selected_idx is None:
-            valid_indices = [i for i in frame2feat.keys() if start <= i < end]
-            if len(valid_indices) == 0:
-                return None, None
-            selected_idx = min(valid_indices)
-
-        feat = frame2feat[selected_idx]
-        return feat[None], torch.tensor([selected_idx], dtype=torch.long)
 
     def _get_idx2meta(self):
         # We expect to see the entire sequence during one epoch,
@@ -133,10 +92,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         data["f_imgseq"] = f_img_dict["features"][start:end].float()  # (F, 3)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
-        key_candidates = [vid, Path(vid).stem]
-        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = self._get_first_dinov3(
-            key_candidates, start, end
-        )
+        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data
 
@@ -172,28 +128,6 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
                 "spv_incam_only": True,
             },
         }
-
-        if False:  # Debug, render incam
-            start, end = data["meta"]["start_end"]
-            vid = data["meta"]["vid"]
-
-            ds = 0.5
-            faces = smplx.faces
-            smplx = make_smplx("supermotion")
-            smplx_c_verts = smplx(**return_data["smpl_params_c"]).vertices
-            K_render = resize_K(K_fullimg, ds)
-
-            video_path = self.hmr4d_support_dir / f"videos/{vid[:-2]}.mp4"
-            images = read_video_np(video_path, scale=ds, start_frame=start, end_frame=end)
-
-            render_dict = {
-                "K": K_render[:1],  # only support batch size 1
-                "faces": faces,
-                "verts": smplx_c_verts,
-                "background": images,
-            }
-            img_overlay = simple_render_mesh_background(render_dict, VI=10)
-            save_video(img_overlay, f"tmp.mp4", crf=28)
 
         # Batchable
         return_data["smpl_params_c"] = repeat_to_max_len_dict(return_data["smpl_params_c"], max_len)

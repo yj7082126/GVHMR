@@ -20,8 +20,6 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         motion_frames=120,  # H36M's videos are 25fps and very long
         lazy_load=False,
         convert_global_pose=False,
-        no_dinov3=True,
-        dinov3_dict_path=None,
     ):
         # Path
         self.root = Path(root)
@@ -30,8 +28,6 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         self.lazy_load = lazy_load
         self.dataset_name = "h36m"
         self.convert_global_pose = convert_global_pose
-        self.no_dinov3 = no_dinov3
-        self.dinov3_dict_path = dinov3_dict_path
         super().__init__()
 
     def _load_dataset(self):
@@ -41,16 +37,9 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         self.smpl_model = make_smplx("supermotion")
         Log.info(f"[H36M] Loading from {fn} ...")
         self.motion_files = torch.load(fn, weights_only=True)
-        # Dict of {
-        #          "smpl_params_glob": {'body_pose', 'global_orient', 'transl', 'betas'}, FxC
-        #          "cam_Rt": tensor(F, 3),
-        #          "cam_K": tensor(1, 10),
-        #         }
+
         self.seqs = list(self.motion_files.keys())
         Log.info(f"[H36M] {len(self.seqs)} sequences. Elapsed: {Log.time() - tic:.2f}s")
-
-        # img(as feature)
-        # vid -> (features, vid, meta {bbx_xys, K_fullimg})
         if not self.lazy_load:
             tic = Log.time()
             fn = self.root / "vitfeat_h36m.pt"
@@ -59,49 +48,8 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
             Log.info(f"[H36M] Finished. Elapsed: {Log.time() - tic:.2f}s")
         else:
             raise NotImplementedError  # "Check BEDLAM-SMPL for lazy_load"
-        self._load_dinov3_dict()
-
-    def _load_dinov3_dict(self):
-        self.dinov3_feat_dict = None
-        if self.no_dinov3 or self.dinov3_dict_path is None:
-            return
-        dinov3_path = Path(self.dinov3_dict_path)
-        if not dinov3_path.exists():
-            Log.info(f"[H36M] DinoV3 dict not found: {dinov3_path}")
-            return
-        raw_dict = torch.load(dinov3_path, weights_only=True)
-        self.dinov3_feat_dict = {}
-        for vname, items in raw_dict.items():
-            frame2feat = {}
-            for item in items:
-                frame2feat[int(item["index"])] = item["feat"].float()
-            self.dinov3_feat_dict[vname] = frame2feat
-        Log.info(f"[H36M] Loaded DinoV3 dict: {dinov3_path} ({len(self.dinov3_feat_dict)} videos)")
-
-    def _get_first_dinov3(self, key_candidates, start, end):
-        if self.dinov3_feat_dict is None:
-            return None, None
-        frame2feat = None
-        for key in key_candidates:
-            if key in self.dinov3_feat_dict:
-                frame2feat = self.dinov3_feat_dict[key]
-                break
-        if frame2feat is None:
-            return None, None
-
-        selected_idx = start if start in frame2feat else None
-        if selected_idx is None:
-            valid_indices = [i for i in frame2feat.keys() if start <= i < end]
-            if len(valid_indices) == 0:
-                return None, None
-            selected_idx = min(valid_indices)
-
-        feat = frame2feat[selected_idx]
-        return feat[None], torch.tensor([selected_idx], dtype=torch.long)
 
     def _get_idx2meta(self):
-        # We expect to see the entire sequence during one epoch,
-        # so each sequence will be sampled max(SeqLength // MotionFrames, 1) times
         seq_lengths = []
         self.idx2meta = []
         for vid in self.f_img_dicts:
@@ -142,10 +90,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         data["K_fullimg"] = f_img_dict["K_fullimg"]
         # data["kp2d"] = self.vitpose[vid][start:end].float()  # (L, 17, 3)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)
-        key_candidates = [vid, Path(vid).stem]
-        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = self._get_first_dinov3(
-            key_candidates, start, end
-        )
+        data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         # Camera
         data["T_w2c"] = motion["cam_Rt"]  # (4, 4)
@@ -218,21 +163,6 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
                 "spv_incam_only": False,
             },
         }
-
-        if False:  # Render to image to check
-            smplx_out = self.smplx(**smpl_params_c)
-            # ----- Overlay ----- #
-            mid = return_data["meta"]["mid"]
-            video_path = self.root / f"videos/{mid}.mp4"
-            images = read_video_np(video_path, data["start_end"][0], data["start_end"][1])
-            render_dict = {
-                "K": K_fullimg[:1],  # only support batch size 1
-                "faces": self.smplx.faces,
-                "verts": smplx_out.vertices,
-                "background": images,
-            }
-            img_overlay = simple_render_mesh_background(render_dict)
-            save_video(img_overlay, f"tmp.mp4")
 
         # Batchable
         return_data["smpl_params_c"] = repeat_to_max_len_dict(return_data["smpl_params_c"], max_len)

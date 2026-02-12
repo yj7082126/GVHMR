@@ -6,6 +6,8 @@ from omegaconf import ListConfig, DictConfig
 from hmr4d.utils.pylogger import Log
 from numpy.random import choice
 from torch.utils.data import default_collate
+from collections.abc import Mapping
+import torch
 
 
 import resource
@@ -14,22 +16,52 @@ rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
 
 
+def _collate_mixed(values, key_path=""):
+    """Collate values while allowing partially-overlapping schemas."""
+    # Missing values: keep as None for the whole field.
+    if any(v is None for v in values):
+        return None
+
+    # Nested dicts: recursively collate by key union.
+    if all(isinstance(v, Mapping) for v in values):
+        out = {}
+        keys = set()
+        for v in values:
+            keys.update(v.keys())
+        for k in keys:
+            out[k] = _collate_mixed([v.get(k, None) for v in values], f"{key_path}.{k}" if key_path else k)
+        return out
+
+    # Tensor values can come from non-resizable storages (e.g., torch.from_numpy),
+    # which breaks default_collate's storage-resize fast-path.
+    if all(isinstance(v, torch.Tensor) for v in values):
+        return torch.stack([v.clone() for v in values], dim=0)
+
+    # Fallback to list for image-like fields if default_collate cannot stack.
+    try:
+        return default_collate(values)
+    except Exception:
+        if key_path.endswith("image"):
+            return values
+        raise
+
+
 def collate_fn(batch):
     """Handle meta and Add batch size to the return dict
     Args:
         batch: list of dict, each dict is a data point
     """
-    # Assume all keys in the batch are the same
+    # Allow partially-overlapping keys across mixed datasets.
     return_dict = {}
-    for k in batch[0].keys():
+    keys = set()
+    for d in batch:
+        keys.update(d.keys())
+    for k in keys:
         if k.startswith("meta"):  # data information, do not batch
-            return_dict[k] = [d[k] for d in batch]
+            return_dict[k] = [d.get(k, None) for d in batch]
         else:
-            values = [d[k] for d in batch]
-            if any(v is None for v in values):
-                return_dict[k] = None if all(v is None for v in values) else values
-            else:
-                return_dict[k] = default_collate(values)
+            values = [d.get(k, None) for d in batch]
+            return_dict[k] = _collate_mixed(values, k)
     return_dict["B"] = len(batch)
     return return_dict
 
