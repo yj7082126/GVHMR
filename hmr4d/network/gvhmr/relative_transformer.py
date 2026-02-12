@@ -8,6 +8,7 @@ from hmr4d.network.base_arch.transformer.encoder_rope import EncoderRoPEBlock, E
 from hmr4d.network.base_arch.transformer.layer import zero_module
 
 from hmr4d.utils.net_utils import length_to_mask
+from hmr4d.utils.pe import PositionEmbeddingRandomST
 from timm.models.vision_transformer import Mlp
 
 
@@ -21,6 +22,9 @@ class NetworkEncoderRoPE(nn.Module):
         cliffcam_dim=3,
         cam_angvel_dim=6,
         imgseq_dim=1024,
+        dino_imgseq_dim=1280,
+        dino_use_pos_emb=True,
+        dino_pos_emb_scale=1.0,
         # intermediate
         latent_dim=512,
         num_layers=12,
@@ -44,6 +48,9 @@ class NetworkEncoderRoPE(nn.Module):
         self.cliffcam_dim = cliffcam_dim
         self.cam_angvel_dim = cam_angvel_dim
         self.imgseq_dim = imgseq_dim
+        self.dino_imgseq_dim = dino_imgseq_dim
+        self.dino_use_pos_emb = dino_use_pos_emb
+        self.dino_pos_emb_scale = dino_pos_emb_scale
 
         # intermediate
         self.latent_dim = latent_dim
@@ -106,8 +113,18 @@ class NetworkEncoderRoPE(nn.Module):
                 nn.LayerNorm(self.imgseq_dim),
                 zero_module(nn.Linear(self.imgseq_dim, latent_dim)),
             )
+        if self.dino_imgseq_dim > 0:
+            self.dino_imgseq_embedder = nn.Sequential(
+                nn.LayerNorm(self.dino_imgseq_dim),
+                zero_module(nn.Linear(self.dino_imgseq_dim, latent_dim)),
+            )
+            if self.dino_use_pos_emb:
+                self.dino_pos_embedder = PositionEmbeddingRandomST(
+                    num_pos_feats=self.latent_dim // 2,
+                    scale=self.dino_pos_emb_scale,
+                )
 
-    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None):
+    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None):
         """
         Args:
             x: None we do not use it
@@ -201,7 +218,7 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
             ]
         )
 
-    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None):
+    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None):
         """
         Cross-attention variant:
         - self-attend on motion tokens x
@@ -229,9 +246,29 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
             x = x + f_delta
 
         context = None
-        if f_imgseq is not None and hasattr(self, "imgseq_embedder"):
-            context = self.imgseq_embedder(f_imgseq)
-        else:
+        if f_dino_imgseq is not None and hasattr(self, "dino_imgseq_embedder"):
+            # Accept (B, L, C) or patch map (B, L, C, H, W) from dino_pool='none'.
+            if f_dino_imgseq.dim() == 5:
+                B0, L0, C0, H0, W0 = f_dino_imgseq.shape
+                dino_tokens = f_dino_imgseq.permute(0, 1, 3, 4, 2).reshape(B0, L0 * H0 * W0, C0)
+                context = self.dino_imgseq_embedder(dino_tokens)
+                if hasattr(self, "dino_pos_embedder"):
+                    pe = self.dino_pos_embedder((L0, H0, W0))  # (C, T, H, W)
+                    pe = pe.permute(1, 2, 3, 0).reshape(1, L0 * H0 * W0, self.latent_dim)
+                    context = context + pe.to(dtype=context.dtype, device=context.device)
+            elif f_dino_imgseq.dim() == 3:
+                B0, L0, _ = f_dino_imgseq.shape
+                context = self.dino_imgseq_embedder(f_dino_imgseq)
+                if hasattr(self, "dino_pos_embedder"):
+                    # Mean-pooled Dino features: temporal PE with a 1x1 spatial grid.
+                    pe = self.dino_pos_embedder((L0, 1, 1))  # (C, T, 1, 1)
+                    pe = pe.permute(1, 2, 3, 0).reshape(1, L0, self.latent_dim)
+                    context = context + pe.to(dtype=context.dtype, device=context.device)
+            else:
+                context = None
+        # elif f_imgseq is not None and hasattr(self, "imgseq_embedder"):
+        #     context = self.imgseq_embedder(f_imgseq)
+        if context is None:
             # Fallback to self-context so the module remains callable without image features.
             context = x
 
@@ -242,7 +279,11 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
         if L_ctx == L:
             pmask_ctx = pmask
         else:
-            ctx_length = torch.clamp(length, max=L_ctx)
+            if L > 0 and (L_ctx % L) == 0:
+                ctx_factor = L_ctx // L
+                ctx_length = torch.clamp(length * ctx_factor, max=L_ctx)
+            else:
+                ctx_length = torch.clamp(length, max=L_ctx)
             pmask_ctx = ~length_to_mask(ctx_length, L_ctx)
 
         if L > self.max_len:
