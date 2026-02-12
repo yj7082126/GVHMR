@@ -10,7 +10,7 @@ from hmr4d.network.hmr2.utils.preproc import crop_and_resize, IMAGE_MEAN, IMAGE_
 from tqdm import tqdm
 
 
-def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="video", rotate=0):
+def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="video", rotate=0, normalize=True):
     if path_type == "video":
         imgs = read_video_np(input_path, scale=img_ds, rotate=rotate)
     elif path_type == "image":
@@ -52,9 +52,11 @@ def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="vide
         bbx_xys_ds_list.append(bbx_xys_ds)
     imgs = torch.from_numpy(np.stack(imgs_list))  # (F, 256, 256, 3), RGB
     bbx_xys = torch.from_numpy(np.stack(bbx_xys_ds_list)) / img_ds  # (F, 3)
-
-    imgs = ((imgs / 255.0 - IMAGE_MEAN) / IMAGE_STD).permute(0, 3, 1, 2)  # (F, 3, 256, 256
-    return imgs, bbx_xys
+    
+    imgs = (imgs / 255.0).float()  # (F, 256, 256, 3), RGB, [0, 1]
+    if normalize:
+        imgs = (imgs - IMAGE_MEAN) / IMAGE_STD  # (F, 3, 256, 256
+    return imgs.permute(0, 3, 1, 2), bbx_xys
 
 
 class Extractor:
