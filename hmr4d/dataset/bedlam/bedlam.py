@@ -33,6 +33,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         lazy_load=True,  # Load from disk when needed
         random1024=False,  # Faster loading for debugging
         load_image=False,
+        load_indices=[0],
     ):
         self.root = Path("inputs/BEDLAM/hmr4d_support")
         self.video_root = Path("/data/datasets/bedlam_download")
@@ -43,6 +44,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         self.dataset_name = "bedlam"
         self.random1024 = random1024
         self.load_image = load_image
+        self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = 512
         self.mid_to_saved_frames = {}
 
@@ -135,6 +137,16 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             crops.append(img_crop)
         return torch.from_numpy(np.stack(crops))
 
+    def _resolve_load_indices(self, length):
+        if length <= 0:
+            return []
+        resolved = []
+        for i in self.load_indices:
+            j = i if i >= 0 else length + i
+            j = max(0, min(length - 1, j))
+            resolved.append(int(j))
+        return resolved
+
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
         self.idx2meta = sorted(list(self.mid_to_valid_range.keys()))
@@ -193,7 +205,10 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         data["bbx_xys"] = f_img_dict["bbx_xys"][start_mapped:end_mapped].float()  # (L, 4)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
-        data["image"] = self._load_aligned_images(mid, [start], data["bbx_xys"][0:1])
+        rel_indices = self._resolve_load_indices(end - start)
+        abs_indices = [start + i for i in rel_indices]
+        bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
+        data["image"] = self._load_aligned_images(mid, abs_indices, bbx_sel)
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data

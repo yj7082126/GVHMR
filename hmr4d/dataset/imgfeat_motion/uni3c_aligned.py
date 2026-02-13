@@ -16,6 +16,7 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         n_els = -1,
         load_image=True,
         image_crop_size=512,
+        load_indices=[0],
     ):
         self.root = Path("inputs/uni3c_aligned")
         self.max_motion_frames = 120
@@ -23,6 +24,7 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         self.n_els = n_els
         self.dataset_name = "UNI3C_SynthGenerated"
         self.load_image = load_image
+        self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
         
         super().__init__()
@@ -65,6 +67,16 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         self.idx2meta = {k: v for k, v in enumerate(self.indices[:self.n_els])}
         Log.info(f"[{self.dataset_name}] Using {len(self.idx2meta)} synthetic samples")
 
+    def _resolve_load_indices(self, length):
+        if length <= 0:
+            return []
+        resolved = []
+        for i in self.load_indices:
+            j = i if i >= 0 else length + i
+            j = max(0, min(length - 1, j))
+            resolved.append(int(j))
+        return resolved
+
     def _load_data(self, idx):
         mid = self.idx2meta[idx]
         batch = torch.load(self.root / f"{mid}/batch_meta.pt")
@@ -74,11 +86,15 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
     
     def _process_data(self, data, idx):
         max_len = self.max_motion_frames
-        meta = data.get("meta", {})
-        # start, end = meta.get("start_end", (0, int(data.get("length", max_len))))
-        start = 0
         mid = data.get("_dinov3_mid", "")
-        image = self._load_aligned_images(mid, [int(start)], data["bbx_xys"][0:1])
+        clip_len = int(data.get("length", data["bbx_xys"].shape[0]))
+        rel_indices = self._resolve_load_indices(clip_len)
+        bbx_sel = (
+            data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)]
+            if len(rel_indices) > 0
+            else data["bbx_xys"][0:0]
+        )
+        image = self._load_aligned_images(mid, rel_indices, bbx_sel)
         data["image"] = image
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
         if "mask" not in data:

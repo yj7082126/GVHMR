@@ -28,6 +28,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         load_image=False,
         image_crop_size=512,
         emdb_root="/data/datasets/emdb",
+        load_indices=[0],
     ):
         """
         split: 1 for EMDB-1, 2 for EMDB-2
@@ -38,6 +39,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         self.split = split
         self.dataset_id = f"EMDB_{split}"
         self.load_image = load_image
+        self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
         self.emdb_root = Path(emdb_root)
         Log.info(f"[{self.dataset_name}] Full sequence, split={split}")
@@ -94,6 +96,16 @@ class EmdbSmplFullSeqDataset(data.Dataset):
     def __len__(self):
         return len(self.idx2meta)
 
+    def _resolve_load_indices(self, length):
+        if length <= 0:
+            return []
+        resolved = []
+        for i in self.load_indices:
+            j = i if i >= 0 else length + i
+            j = max(0, min(length - 1, j))
+            resolved.append(int(j))
+        return resolved
+
     def _load_data(self, idx):
         data = {}
 
@@ -132,7 +144,15 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         f_imgseq = label["features"]
         kp2d = label["kp2d"]
         data.update({"bbx_xys": bbx_xys, "f_imgseq": f_imgseq, "kp2d": kp2d})
-        data["image"] = self._load_aligned_images(vid, [start], bbx_xys[start:start + 1])
+        rel_indices = self._resolve_load_indices(length)
+        abs_indices = [start + i for i in rel_indices]
+        bbx_clip = bbx_xys[start:end]
+        bbx_sel = (
+            bbx_clip[torch.as_tensor(rel_indices, dtype=torch.long)]
+            if len(rel_indices) > 0
+            else bbx_clip[0:0]
+        )
+        data["image"] = self._load_aligned_images(vid, abs_indices, bbx_sel)
 
         # to render a video
         video_path = self.emdb_dir / f"videos/{vid}.mp4"

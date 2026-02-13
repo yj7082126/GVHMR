@@ -20,12 +20,13 @@ from hmr4d.configs import MainStore, builds
 
 
 class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
-    def __init__(self, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles"):
+    def __init__(self, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles", load_indices=[0]):
         # Path
         self.hmr4d_support_dir = Path("inputs/3DPW/hmr4d_support")
         self.image_root = Path(image_root)
         self.dataset_name = "3DPW"
         self.load_image = load_image
+        self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
 
         # Setting
@@ -75,6 +76,16 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
             crops.append(img_crop)
         return torch.from_numpy(np.stack(crops))
 
+    def _resolve_load_indices(self, length):
+        if length <= 0:
+            return []
+        resolved = []
+        for i in self.load_indices:
+            j = i if i >= 0 else length + i
+            j = max(0, min(length - 1, j))
+            resolved.append(int(j))
+        return resolved
+
     def _get_idx2meta(self):
         # We expect to see the entire sequence during one epoch,
         # so each sequence will be sampled max(SeqLength // MotionFrames, 1) times
@@ -123,7 +134,10 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         data["f_imgseq"] = f_img_dict["features"][start:end].float()  # (F, 3)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
-        data["image"] = self._load_aligned_images(vid, [start], data["bbx_xys"][0:1])
+        rel_indices = self._resolve_load_indices(end - start)
+        abs_indices = [start + i for i in rel_indices]
+        bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
+        data["image"] = self._load_aligned_images(vid, abs_indices, bbx_sel)
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data

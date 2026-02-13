@@ -18,11 +18,12 @@ VID_HARD = []
 
 
 class ThreedpwSmplFullSeqDataset(data.Dataset):
-    def __init__(self, flip_test=False, skip_invalid=False, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles"):
+    def __init__(self, flip_test=False, skip_invalid=False, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles", load_indices=[0]):
         super().__init__()
         self.dataset_name = "3DPW"
         self.skip_invalid = skip_invalid
         self.load_image = load_image
+        self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
         self.image_root = Path(image_root)
         Log.info(f"[{self.dataset_name}] Full sequence")
@@ -71,13 +72,23 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
             crops.append(img_crop)
         return torch.from_numpy(np.stack(crops))
 
+    def _resolve_load_indices(self, length):
+        if length <= 0:
+            return []
+        resolved = []
+        for i in self.load_indices:
+            j = i if i >= 0 else length + i
+            j = max(0, min(length - 1, j))
+            resolved.append(int(j))
+        return resolved
+
     def __len__(self):
         return len(self.idx2meta)
 
     def _load_data(self, idx):
         data = {}
         vid = self.idx2meta[idx]
-        meta = {"dataset_id": self.dataset_name, "vid": vid}
+        meta = {"dataset_id": self.dataset_name, "vid": vid, "start_end": (0, len(self.labels[vid]["mask"]))}
         data.update({"meta": meta})
 
         # Add useful data
@@ -108,8 +119,11 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt", weights_only=True)
         f_imgseq = f_img_dict["features"].float()
         data["f_imgseq"] = f_imgseq  # (F, 1024)
-        first_valid = int(torch.where(mask)[0][0].item()) if mask.any() else 0
-        data["image"] = self._load_aligned_images(vid, [first_valid], bbx_xys[first_valid:first_valid + 1])
+        length = data["length"]
+        rel_indices = self._resolve_load_indices(length)
+        abs_indices = rel_indices  # full sequence starts from 0
+        bbx_sel = bbx_xys[torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else bbx_xys[0:0]
+        data["image"] = self._load_aligned_images(vid, abs_indices, bbx_sel)
 
         # to render a video
         vname = label["vname"]
