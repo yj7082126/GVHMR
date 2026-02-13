@@ -53,13 +53,13 @@ class GvhmrPL(pl.LightningModule):
         #     raise RuntimeError(f"{name} is None: {x}")
         if not torch.isfinite(x).all():
             # print(outputs)
-            print(outputs['model_output']['pred_context'].size)
+            print(outputs['model_output']['pred_context'].size())
             nan_mask = torch.isnan(outputs['model_output']['pred_context'][:,:,0])
             nan_inds = np.unique(nan_mask.nonzero().cpu().numpy()[:,0])
             print(f"nan_ind: {nan_inds}")
-            for nan_ind in nan_inds:
-                weird_batch = batch['meta'][nan_ind]
-                print(f"weird_batch meta: {weird_batch}")
+            # for nan_ind in nan_inds:
+            #     weird_batch = batch['meta'][nan_ind]
+            #     print(f"weird_batch meta: {weird_batch}")
             # raise RuntimeError(f"{name} is not finite: {x}")
 
 
@@ -78,46 +78,8 @@ class GvhmrPL(pl.LightningModule):
         # bbx_xys
         i_x2d = safely_render_x3d_K(gt_verts437, batch["K_fullimg"], thr=0.3)
         bbx_xys = get_bbx_xys(i_x2d, do_augment=True)
-        if False:  # trust image bbx_xys seems better
-            batch["bbx_xys"] = bbx_xys
-        else:
-            mask_bbx_xys = batch["mask"]["bbx_xys"]
-            batch["bbx_xys"][~mask_bbx_xys] = bbx_xys[~mask_bbx_xys]
-        if False:  # visualize bbx_xys from an iPhone view
-            render_w, render_h = 120, 160  # iphone main-lens 24mm 3:4
-            ratio = render_w / 1528
-            offset = torch.tensor([764 - 500, 1019 - 500]).to(i_x2d)
-            i_x2d_render = (i_x2d + offset).clone()
-            i_x2d_render = (i_x2d_render * ratio).long().clone()
-            torch.clamp_(i_x2d_render[..., 0], 0, render_w - 1)
-            torch.clamp_(i_x2d_render[..., 1], 0, render_h - 1)
-            bbx_xys_render = bbx_xys.clone()
-            bbx_xys_render[..., :2] += offset
-            bbx_xys_render *= ratio
-
-            output_dir = Path("outputs/simulated_bbx_xys")
-            output_dir.mkdir(parents=True, exist_ok=True)
-            video_list = []
-            for bid in range(B):
-                images = torch.zeros(F, render_h, render_w, 3, device=i_x2d.device)
-                for fid in range(F):
-                    images[fid, i_x2d_render[bid, fid, :, 1], i_x2d_render[bid, fid, :, 0]] = 255
-
-                images = draw_bbx_xys_on_image_batch(bbx_xys_render[bid].cpu().numpy(), images.cpu().numpy())
-                images = np.stack(images).astype("uint8")  # (L, H, W, 3)
-                images[:, 0, :] = np.array([255, 255, 255])
-                images[:, -1, :] = np.array([255, 255, 255])
-                images[:, :, 0] = np.array([255, 255, 255])
-                images[:, :, -1] = np.array([255, 255, 255])
-                video_list.append(images)
-
-            # stack videos
-            video_output = []
-            for i in range(0, len(video_list), 4):
-                if i + 4 <= len(video_list):
-                    video_output.append(np.concatenate(video_list[i : i + 4], axis=2))
-            video_output = np.concatenate(video_output, axis=1)
-            save_video(video_output, output_dir / f"{batch_idx}.mp4", fps=30, quality=5)
+        mask_bbx_xys = batch["mask"]["bbx_xys"]
+        batch["bbx_xys"][~mask_bbx_xys] = bbx_xys[~mask_bbx_xys]
 
         # noisy_j3d -> project to i_j2d -> compute a bbx -> normalized kp2d [-1, 1]
         noisy_j3d = gt_j3d + get_wham_aug_kp3d(gt_j3d.shape[:2])
@@ -141,16 +103,6 @@ class GvhmrPL(pl.LightningModule):
 
         # Set untrusted frames to False
         batch["obs"][~batch["mask"]["valid"]] = 0
-
-        if False:  # wis3d
-            wis3d = make_wis3d(name="debug-aug-kp3d")
-            add_motion_as_lines(gt_j3d[0], wis3d, name="gt_j3d", skeleton_type="coco17")
-            add_motion_as_lines(noisy_j3d[0], wis3d, name="noisy_j3d", skeleton_type="coco17")
-
-        # f_imgseq: apply random aug on offline extracted features
-        # f_imgseq = batch["f_imgseq"] + torch.randn_like(batch["f_imgseq"]) * 0.1
-        # f_imgseq[~batch["mask"]["f_imgseq"]] = 0
-        # batch["f_imgseq"] = f_imgseq.clone()
 
         # Forward and get loss
         outputs = self.pipeline.forward(batch, train=True)
