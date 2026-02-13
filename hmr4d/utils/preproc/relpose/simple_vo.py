@@ -48,11 +48,14 @@ class SimpleVO:
             curr_frame = frames[frame_idx]
 
             # Match frames
-            pts0, pts1 = matcher.match_np(prev_frame, curr_frame)
-            T_delta = solver.solve(pts0, pts1)  # T_delta = T_curr @ T_last^-1
-
-            # Compute current frame's transformation matrix
-            T_w2c_list.append(T_delta @ T_w2c_list[-1])
+            try:
+                pts0, pts1 = matcher.match_np(prev_frame, curr_frame)
+                T_delta = solver.solve(pts0, pts1)  # T_delta = T_curr @ T_last^-1
+                # Compute current frame's transformation matrix
+                T_w2c_list.append(T_delta @ T_w2c_list[-1])
+            except Exception as e:
+                print(f"[SimpleVO] Frame {frame_idx}: VO failed with error {e}. Using previous pose.")
+                T_w2c_list.append(T_w2c_list[-1])
 
             # Current frame becomes previous frame for next iteration
             prev_frame = curr_frame
