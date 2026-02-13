@@ -2,6 +2,7 @@ import torch
 from torch.utils import data
 from pathlib import Path
 import numpy as np
+import cv2
 
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
@@ -13,15 +14,19 @@ from hmr4d.utils.net_utils import get_valid_mask, repeat_to_max_len, repeat_to_m
 from hmr4d.utils.smplx_utils import make_smplx
 from hmr4d.utils.video_io_utils import get_video_lwh, read_video_np, save_video
 from hmr4d.utils.vis.renderer_utils import simple_render_mesh_background
+from hmr4d.network.hmr2.utils.preproc import crop_and_resize
 
 from hmr4d.configs import MainStore, builds
 
 
 class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
-    def __init__(self):
+    def __init__(self, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles"):
         # Path
         self.hmr4d_support_dir = Path("inputs/3DPW/hmr4d_support")
+        self.image_root = Path(image_root)
         self.dataset_name = "3DPW"
+        self.load_image = load_image
+        self.image_crop_size = image_crop_size
 
         # Setting
         self.min_motion_frames = 60
@@ -43,6 +48,32 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
 
         self.f_img_folder = self.hmr4d_support_dir / "imgfeats/3dpw_train_smplx_refit"
         Log.info(f"[{self.dataset_name}] Train")
+
+    def _load_aligned_images(self, vid, frame_indices, bbx_xys):
+        if not self.load_image:
+            return None
+        if len(frame_indices) != len(bbx_xys):
+            Log.info(f"[{self.dataset_name}] frame/bbx mismatch: {len(frame_indices)} vs {len(bbx_xys)} for {vid}")
+            return None
+
+        scene_dir = self.image_root / "_".join(vid.split("_")[:-1])
+        crops = []
+        for frame_idx, bbx in zip(frame_indices, bbx_xys):
+            input_path = scene_dir / f"image_{int(frame_idx):05d}.jpg"
+            frame_bgr = cv2.imread(str(input_path))
+            if frame_bgr is None:
+                Log.info(f"[{self.dataset_name}] image not found/readable: {input_path}")
+                return None
+            frame = frame_bgr[..., ::-1]  # BGR -> RGB
+            img_crop, _ = crop_and_resize(
+                frame,
+                bbx[:2].cpu().numpy(),
+                float(bbx[2].item()),
+                dst_size=self.image_crop_size,
+                enlarge_ratio=1.0,
+            )
+            crops.append(img_crop)
+        return torch.from_numpy(np.stack(crops))
 
     def _get_idx2meta(self):
         # We expect to see the entire sequence during one epoch,
@@ -92,6 +123,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         data["f_imgseq"] = f_img_dict["features"][start:end].float()  # (F, 3)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
+        data["image"] = self._load_aligned_images(vid, [start], data["bbx_xys"][0:1])
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data
@@ -115,6 +147,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
             "bbx_xys": data["bbx_xys"],  # (F, 3)
             "K_fullimg": K_fullimg,  # (F, 3, 3)
             "f_imgseq": data["f_imgseq"],  # (F, D)
+            "image": data["image"],  # (N, H, W, 3) or None
             "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (N, 1280, 32, 32) or None
             "f_dinov3_frame": data["f_dinov3_frame"],  # (N,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
@@ -124,6 +157,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
                 "vitpose": False,
                 "bbx_xys": True,
                 "f_imgseq": True,
+                "image": data["image"] is not None,
                 "f_dinov3_imgseq": data["f_dinov3_imgseq"] is not None,
                 "spv_incam_only": True,
             },
@@ -144,3 +178,4 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
 
 # 3DPW
 MainStore.store(name="v1", node=builds(ThreedpwSmplDataset), group="train_datasets/imgfeat_3dpw")
+MainStore.store(name="v1_with_image", node=builds(ThreedpwSmplDataset, load_image=True), group="train_datasets/imgfeat_3dpw")

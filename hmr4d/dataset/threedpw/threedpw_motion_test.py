@@ -1,12 +1,15 @@
 import torch
 from torch.utils import data
 from pathlib import Path
+import numpy as np
+import cv2
 
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
 from hmr4d.utils.geo_transform import compute_cam_angvel
 from hmr4d.utils.geo.hmr_cam import estimate_K, resize_K
 from hmr4d.utils.geo.flip_utils import flip_kp2d_coco17
+from hmr4d.network.hmr2.utils.preproc import crop_and_resize
 
 from hmr4d.configs import MainStore, builds
 
@@ -15,10 +18,13 @@ VID_HARD = []
 
 
 class ThreedpwSmplFullSeqDataset(data.Dataset):
-    def __init__(self, flip_test=False, skip_invalid=False):
+    def __init__(self, flip_test=False, skip_invalid=False, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles"):
         super().__init__()
         self.dataset_name = "3DPW"
         self.skip_invalid = skip_invalid
+        self.load_image = load_image
+        self.image_crop_size = image_crop_size
+        self.image_root = Path(image_root)
         Log.info(f"[{self.dataset_name}] Full sequence")
 
         # Load evaluation protocol from WHAM labels
@@ -38,6 +44,32 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         self.flip_test = flip_test
         if self.flip_test:
             Log.info(f"[{self.dataset_name}] Flip test enabled")
+
+    def _load_aligned_images(self, vid, frame_indices, bbx_xys):
+        if not self.load_image:
+            return None
+        if len(frame_indices) != len(bbx_xys):
+            Log.info(f"[{self.dataset_name}] frame/bbx mismatch: {len(frame_indices)} vs {len(bbx_xys)} for {vid}")
+            return None
+
+        scene_dir = self.image_root / "_".join(vid.split("_")[:-1])
+        crops = []
+        for frame_idx, bbx in zip(frame_indices, bbx_xys):
+            input_path = scene_dir / f"image_{int(frame_idx):05d}.jpg"
+            frame_bgr = cv2.imread(str(input_path))
+            if frame_bgr is None:
+                Log.info(f"[{self.dataset_name}] image not found/readable: {input_path}")
+                return None
+            frame = frame_bgr[..., ::-1]  # BGR -> RGB
+            img_crop, _ = crop_and_resize(
+                frame,
+                bbx[:2].cpu().numpy(),
+                float(bbx[2].item()),
+                dst_size=self.image_crop_size,
+                enlarge_ratio=1.0,
+            )
+            crops.append(img_crop)
+        return torch.from_numpy(np.stack(crops))
 
     def __len__(self):
         return len(self.idx2meta)
@@ -76,6 +108,8 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt", weights_only=True)
         f_imgseq = f_img_dict["features"].float()
         data["f_imgseq"] = f_imgseq  # (F, 1024)
+        first_valid = int(torch.where(mask)[0][0].item()) if mask.any() else 0
+        data["image"] = self._load_aligned_images(vid, [first_valid], bbx_xys[first_valid:first_valid + 1])
 
         # to render a video
         vname = label["vname"]
@@ -149,5 +183,10 @@ MainStore.store(
 MainStore.store(
     name="v1",
     node=builds(ThreedpwSmplFullSeqDataset, flip_test=False),
+    group="test_datasets/3dpw",
+)
+MainStore.store(
+    name="with_image",
+    node=builds(ThreedpwSmplFullSeqDataset, flip_test=False, load_image=True),
     group="test_datasets/3dpw",
 )

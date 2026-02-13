@@ -2,6 +2,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils import data
+import cv2
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
 
@@ -9,6 +10,7 @@ from hmr4d.utils.geo_transform import compute_cam_angvel
 from pytorch3d.transforms import quaternion_to_matrix
 from hmr4d.utils.geo.hmr_cam import estimate_K, resize_K
 from hmr4d.utils.geo.flip_utils import flip_kp2d_coco17
+from hmr4d.network.hmr2.utils.preproc import crop_and_resize
 
 from .utils import EMDB1_NAMES, EMDB2_NAMES
 
@@ -19,7 +21,14 @@ from hmr4d.configs import MainStore, builds
 
 
 class EmdbSmplFullSeqDataset(data.Dataset):
-    def __init__(self, split=1, flip_test=False):
+    def __init__(
+        self,
+        split=1,
+        flip_test=False,
+        load_image=False,
+        image_crop_size=512,
+        emdb_root="/data/datasets/emdb",
+    ):
         """
         split: 1 for EMDB-1, 2 for EMDB-2
         flip_test: if True, extra flip data will be returned
@@ -28,6 +37,9 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         self.dataset_name = "EMDB"
         self.split = split
         self.dataset_id = f"EMDB_{split}"
+        self.load_image = load_image
+        self.image_crop_size = image_crop_size
+        self.emdb_root = Path(emdb_root)
         Log.info(f"[{self.dataset_name}] Full sequence, split={split}")
 
         # Load evaluation protocol from WHAM labels
@@ -48,6 +60,36 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         self.flip_test = flip_test
         if self.flip_test:
             Log.info(f"[{self.dataset_name}] Flip test enabled")
+
+    def _load_aligned_images(self, vid, frame_indices, bbx_xys):
+        if not self.load_image:
+            return None
+        if len(frame_indices) != len(bbx_xys):
+            Log.info(f"[{self.dataset_name}] frame/bbx mismatch: {len(frame_indices)} vs {len(bbx_xys)} for {vid}")
+            return None
+
+        category = vid.split("_")[0]
+        vid_name = "_".join(vid.split("_")[1:])
+        image_dir = self.emdb_root / f"{category}/{vid_name}/images"
+
+        crops = []
+        for frame_idx, bbx in zip(frame_indices, bbx_xys):
+            image_path = image_dir / f"{int(frame_idx):05d}.png"
+            frame_bgr = cv2.imread(str(image_path))
+            if frame_bgr is None:
+                Log.info(f"[{self.dataset_name}] image not found/readable: {image_path}")
+                return None
+            frame = frame_bgr[..., ::-1]  # BGR -> RGB
+
+            img_crop, _ = crop_and_resize(
+                frame,
+                bbx[:2].cpu().numpy(),
+                float(bbx[2].item()),
+                dst_size=self.image_crop_size,
+                enlarge_ratio=1.0,
+            )
+            crops.append(img_crop)
+        return torch.from_numpy(np.stack(crops))
 
     def __len__(self):
         return len(self.idx2meta)
@@ -90,6 +132,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         f_imgseq = label["features"]
         kp2d = label["kp2d"]
         data.update({"bbx_xys": bbx_xys, "f_imgseq": f_imgseq, "kp2d": kp2d})
+        data["image"] = self._load_aligned_images(vid, [start], bbx_xys[start:start + 1])
 
         # to render a video
         video_path = self.emdb_dir / f"videos/{vid}.mp4"
@@ -156,6 +199,11 @@ MainStore.store(
     group="test_datasets/emdb1",
 )
 MainStore.store(
+    name="v1_with_image",
+    node=builds(EmdbSmplFullSeqDataset, populate_full_signature=True, load_image=True),
+    group="test_datasets/emdb1",
+)
+MainStore.store(
     name="v1",
     node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True),
     group="test_datasets/emdb2",
@@ -163,5 +211,10 @@ MainStore.store(
 MainStore.store(
     name="v1_fliptest",
     node=builds(EmdbSmplFullSeqDataset, split=2, flip_test=True, populate_full_signature=True),
+    group="test_datasets/emdb2",
+)
+MainStore.store(
+    name="v1_with_image",
+    node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True, load_image=True),
     group="test_datasets/emdb2",
 )
