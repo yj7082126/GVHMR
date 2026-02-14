@@ -107,7 +107,7 @@ class NetworkEncoderRoPE(nn.Module):
                 zero_module(nn.Linear(self.imgseq_dim, latent_dim)),
             )
 
-    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None):
+    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None, f_dino_frame=None):
         """
         Args:
             x: None we do not use it
@@ -239,7 +239,7 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
             ]
         )
 
-    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None):
+    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None, f_dino_frame=None):
         """
         Cross-attention variant:
         - self-attend on motion tokens x
@@ -268,20 +268,34 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
 
         context = None
         context_shape = None
+        context_frame_indices = None
+        def _normalize_context_frame_indices(frame_idx, bsz, tlen, device):
+            if frame_idx is None:
+                return torch.arange(tlen, device=device).view(1, tlen).expand(bsz, -1)
+            if frame_idx.dim() == 1:
+                frame_idx = frame_idx[None].expand(bsz, -1)
+            if frame_idx.shape[0] != bsz:
+                raise ValueError(f"f_dino_frame batch mismatch: {frame_idx.shape[0]} vs {bsz}")
+            if frame_idx.shape[1] != tlen:
+                raise ValueError(f"f_dino_frame length mismatch: {frame_idx.shape[1]} vs {tlen}")
+            return frame_idx.to(device=device, dtype=torch.long)
         if f_dino_imgseq is not None:
             # Accept (B, L, C) or patch map (B, L, C, H, W) from dino_pool='none'.
             if f_dino_imgseq.dim() == 5:
                 B0, L0, C0, H0, W0 = f_dino_imgseq.shape
                 context = f_dino_imgseq.permute(0, 1, 3, 4, 2).reshape(B0, L0 * H0 * W0, C0)
                 context_shape = (L0, H0, W0)
+                context_frame_indices = _normalize_context_frame_indices(f_dino_frame, B0, L0, context.device)
             elif f_dino_imgseq.dim() == 3:
                 B0, L0, _ = f_dino_imgseq.shape
                 context = f_dino_imgseq
                 context_shape = (L0, 1, 1)
+                context_frame_indices = _normalize_context_frame_indices(f_dino_frame, B0, L0, context.device)
         if context is None:
             # No dino context: use one zero token (with full padding) to keep tensor shapes valid.
             context = x.new_zeros((B, 1, self.dino_imgseq_dim))
             context_shape = (1, 1, 1)
+            context_frame_indices = x.new_zeros((B, 1), dtype=torch.long)
 
         # Setup length and make padding mask
         assert B == length.size(0)
@@ -322,6 +336,7 @@ class NetworkEncoderRoPEwithCA(NetworkEncoderRoPE):
                 memory_mask=memory_mask,
                 memory_key_padding_mask=pmask_ctx,
                 memory_shape=context_shape,
+                memory_frame_indices=context_frame_indices,
             )
 
         # Output

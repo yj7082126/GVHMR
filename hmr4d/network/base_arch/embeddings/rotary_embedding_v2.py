@@ -55,6 +55,20 @@ def reshape_for_broadcast(
     assert 0 <= 1 < ndim
 
     if isinstance(freqs_cis, tuple):
+        # Batched real-valued frequencies: (B, S, D)
+        if freqs_cis[0].ndim == 3:
+            if head_first:
+                assert freqs_cis[0].shape == (x.shape[0], x.shape[-2], x.shape[-1]), (
+                    f"freqs_cis shape {freqs_cis[0].shape} does not match x shape {x.shape}"
+                )
+                shape = [d if i == 0 or i == ndim - 2 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+            else:
+                assert freqs_cis[0].shape == (x.shape[0], x.shape[1], x.shape[-1]), (
+                    f"freqs_cis shape {freqs_cis[0].shape} does not match x shape {x.shape}"
+                )
+                shape = [d if i == 0 or i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+            return freqs_cis[0].view(*shape), freqs_cis[1].view(*shape)
+
         if head_first:
             assert freqs_cis[0].shape == (x.shape[-2], x.shape[-1]), (
                 f"freqs_cis shape {freqs_cis[0].shape} does not match x shape {x.shape}"
@@ -67,6 +81,19 @@ def reshape_for_broadcast(
             shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
         return freqs_cis[0].view(*shape), freqs_cis[1].view(*shape)
     else:
+        if freqs_cis.ndim == 3:
+            if head_first:
+                assert freqs_cis.shape == (x.shape[0], x.shape[-2], x.shape[-1]), (
+                    f"freqs_cis shape {freqs_cis.shape} does not match x shape {x.shape}"
+                )
+                shape = [d if i == 0 or i == ndim - 2 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+            else:
+                assert freqs_cis.shape == (x.shape[0], x.shape[1], x.shape[-1]), (
+                    f"freqs_cis shape {freqs_cis.shape} does not match x shape {x.shape}"
+                )
+                shape = [d if i == 0 or i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+            return freqs_cis.view(*shape)
+
         if head_first:
             assert freqs_cis.shape == (x.shape[-2], x.shape[-1]), (
                 f"freqs_cis shape {freqs_cis.shape} does not match x shape {x.shape}"
@@ -162,6 +189,37 @@ def get_1d_rotary_pos_embed(
     return freqs_cis
 
 
+def get_1d_rotary_pos_embed_from_pos(
+    dim: int,
+    pos: torch.Tensor,
+    theta: float = 10000.0,
+    use_real: bool = False,
+    theta_rescale_factor: float = 1.0,
+    interpolation_factor: float = 1.0,
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """
+    1D RoPE from arbitrary position tensor.
+    Args:
+        dim: rope dimension for this axis (must be even)
+        pos: (...,) position values
+    Returns:
+        use_real=True: (cos, sin), each (..., dim)
+        use_real=False: complex tensor (..., dim//2)
+    """
+    if theta_rescale_factor != 1.0:
+        theta *= theta_rescale_factor ** (dim / (dim - 2))
+
+    pos = pos.float()
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device=pos.device, dtype=pos.dtype)[: (dim // 2)] / dim))
+    freqs = pos[..., None] * (freqs * interpolation_factor)  # (..., dim//2)
+    if use_real:
+        freqs_cos = freqs.cos().repeat_interleave(2, dim=-1)  # (..., dim)
+        freqs_sin = freqs.sin().repeat_interleave(2, dim=-1)  # (..., dim)
+        return freqs_cos, freqs_sin
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_cis
+
+
 def get_nd_rotary_pos_embed(
     rope_dim_list,
     start,
@@ -205,6 +263,70 @@ def get_nd_rotary_pos_embed(
     return emb
 
 
+def get_nd_rotary_pos_embed_with_frame_indices(
+    rope_dim_list,
+    frame_indices: torch.Tensor,
+    height: int,
+    width: int,
+    theta=10000.0,
+    use_real=True,
+    theta_rescale_factor: Union[float, List[float]] = 1.0,
+    interpolation_factor: Union[float, List[float]] = 1.0,
+):
+    """
+    ND RoPE for (T,H,W) context with arbitrary temporal positions.
+    Args:
+        rope_dim_list: [Dt, Dh, Dw], sum == head_dim
+        frame_indices: (B, T) or (T,)
+    Returns:
+        use_real=True: (cos, sin), each (B, T*H*W, sum(rope_dim_list))
+    """
+    if frame_indices.dim() == 1:
+        frame_indices = frame_indices.unsqueeze(0)
+    if frame_indices.dim() != 2:
+        raise ValueError(f"frame_indices must be (B,T) or (T,), got {tuple(frame_indices.shape)}")
+
+    B, T = frame_indices.shape
+    H, W = int(height), int(width)
+    device = frame_indices.device
+    dtype = torch.float32
+
+    if isinstance(theta_rescale_factor, (int, float)):
+        theta_rescale_factor = [theta_rescale_factor] * len(rope_dim_list)
+    elif isinstance(theta_rescale_factor, list) and len(theta_rescale_factor) == 1:
+        theta_rescale_factor = [theta_rescale_factor[0]] * len(rope_dim_list)
+    if isinstance(interpolation_factor, (int, float)):
+        interpolation_factor = [interpolation_factor] * len(rope_dim_list)
+    elif isinstance(interpolation_factor, list) and len(interpolation_factor) == 1:
+        interpolation_factor = [interpolation_factor[0]] * len(rope_dim_list)
+
+    t_pos = frame_indices.to(device=device, dtype=dtype)[:, :, None, None].expand(B, T, H, W).reshape(B, -1)
+    y_axis = torch.arange(H, device=device, dtype=dtype)
+    y_pos = y_axis[None, None, :, None].expand(B, T, H, W).reshape(B, -1)
+    x_axis = torch.arange(W, device=device, dtype=dtype)
+    x_pos = x_axis[None, None, None, :].expand(B, T, H, W).reshape(B, -1)
+
+    pos_per_axis = [t_pos, y_pos, x_pos]
+    embs = []
+    for i in range(len(rope_dim_list)):
+        emb = get_1d_rotary_pos_embed_from_pos(
+            rope_dim_list[i],
+            pos_per_axis[i],
+            theta=theta,
+            use_real=use_real,
+            theta_rescale_factor=theta_rescale_factor[i],
+            interpolation_factor=interpolation_factor[i],
+        )
+        embs.append(emb)
+
+    if use_real:
+        cos = torch.cat([emb[0] for emb in embs], dim=-1)
+        sin = torch.cat([emb[1] for emb in embs], dim=-1)
+        return cos, sin
+    emb = torch.cat(embs, dim=-1)
+    return emb
+
+
 def get_encoding(d_model, max_seq_len=4096):
     """
     Backward-compatible helper matching rotary_embedding.py output.
@@ -243,4 +365,3 @@ class ROPE(nn.Module):
             encoding = self.encoding[:seq_len]
 
         return apply_rotary_emb(encoding, x, seq_dim=-2)
-

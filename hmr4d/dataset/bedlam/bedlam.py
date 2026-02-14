@@ -34,6 +34,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         random1024=False,  # Faster loading for debugging
         load_image=False,
         load_indices=[0],
+        end_frame_window=20,
     ):
         self.root = Path("inputs/BEDLAM/hmr4d_support")
         self.video_root = Path("/data/datasets/bedlam_download")
@@ -45,6 +46,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         self.random1024 = random1024
         self.load_image = load_image
         self.load_indices = [int(i) for i in load_indices]
+        self.end_frame_window = int(end_frame_window)
         self.image_crop_size = 512
         self.mid_to_saved_frames = {}
 
@@ -167,23 +169,26 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         if mlength < min_motion_len:  # the minimal mlength is 30 when generating data
             start = range1
             length = mlength
+            end = start + length
         else:
-            # Pick start from pre-saved frame images (e.g. 10 frames per video) instead of random range sampling.
-            saved_starts = self._get_saved_frame_indices(mid)
-            saved_starts = [s for s in saved_starts if range1 <= s < range1 + 10]
-            if len(saved_starts) > 0:
-                start = int(np.random.choice(saved_starts))
+            # Pick clip end from pre-saved end-frame images in the tail of valid range.
+            saved_end_candidates = self._get_saved_frame_indices(mid)
+            tail_start = max(range1, range2 - self.end_frame_window)
+            saved_end_candidates = [f for f in saved_end_candidates if tail_start <= f < range2]
+            if len(saved_end_candidates) > 0:
+                end_inclusive = int(np.random.choice(saved_end_candidates))
             else:
-                # Fallback to valid range start if saved frames are missing.
-                start = range1
-                Log.info(f"[BEDLAM] no saved frames for {mid}, fallback start={start}")
+                # Fallback to last valid frame if saved end-frames are missing.
+                end_inclusive = range2 - 1
+                Log.info(f"[BEDLAM] no saved end-frames for {mid}, fallback end={end_inclusive}")
 
-            max_len_from_start = max(1, min(max_motion_len, range2 - start))
-            if max_len_from_start < min_motion_len:
-                length = max_len_from_start
+            end = end_inclusive + 1  # exclusive
+            max_len_from_end = max(1, min(max_motion_len, end - range1))
+            if max_len_from_end < min_motion_len:
+                length = max_len_from_end
             else:
-                length = int(np.random.randint(min_motion_len, max_len_from_start + 1))  # [low, high)
-        end = start + length
+                length = int(np.random.randint(min_motion_len, max_len_from_end + 1))
+            start = end - length
         data["start_end"] = (start, end)
         data["length"] = length
         data["meta"] = {"data_name": self.dataset_name, "idx": idx, "vid": mid, "start_end": (start, end)}

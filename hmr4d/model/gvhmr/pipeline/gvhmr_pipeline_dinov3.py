@@ -83,14 +83,14 @@ class Pipeline(nn.Module):
         """
         Convert full-image intrinsics to crop-image intrinsics for square crops centered at bbx_xys.
         Args:
-            K_fullimg: (B, L, 3, 3)
-            bbx_xys: (B, L, 3) [cx, cy, size]
+            K_fullimg: (B, N, 3, 3)
+            bbx_xys: (B, N, 3) [cx, cy, size]
         Returns:
-            K_crop: (B*L, 3, 3)
+            K_crop: (B*N, 3, 3)
         """
-        B, L = bbx_xys.shape[:2]
-        K = K_fullimg.reshape(B * L, 3, 3).clone()
-        bbx = bbx_xys.reshape(B * L, 3)
+        B, N = bbx_xys.shape[:2]
+        K = K_fullimg.reshape(B * N, 3, 3).clone()
+        bbx = bbx_xys.reshape(B * N, 3)
 
         cx_b = bbx[:, 0]
         cy_b = bbx[:, 1]
@@ -141,6 +141,39 @@ class Pipeline(nn.Module):
         dino_device = next(self.dinov3.parameters()).device
         images = images.view(B * L, 3, images.shape[-2], images.shape[-1]).to(dino_device).float()
 
+        # Select K/bbx for exactly the loaded image frames (e.g. load_indices=[0, -1]).
+        frame_indices = inputs.get("image_frame_indices", inputs.get("f_dinov3_frame", None))
+        bbx_sel = None
+        K_sel = None
+        if ("bbx_xys" in inputs and inputs["bbx_xys"] is not None):
+            bbx_all = inputs["bbx_xys"].to(dino_device)
+            if bbx_all.dim() == 3 and bbx_all.shape[1] == L:
+                bbx_sel = bbx_all
+            elif bbx_all.dim() == 3 and frame_indices is not None:
+                frame_indices = frame_indices.to(dino_device).long()
+                if frame_indices.dim() == 1:
+                    frame_indices = frame_indices.unsqueeze(0).expand(B, -1)
+                if frame_indices.shape[0] != B or frame_indices.shape[1] != L:
+                    raise ValueError(
+                        f"image_frame_indices shape {tuple(frame_indices.shape)} incompatible with image shape {(B, L)}"
+                    )
+                frame_indices = frame_indices.clamp(min=0, max=bbx_all.shape[1] - 1)
+                bbx_sel = bbx_all[torch.arange(B, device=dino_device)[:, None], frame_indices]
+            else:
+                return None, False
+
+        if ("K_fullimg" in inputs and inputs["K_fullimg"] is not None):
+            K_all = inputs["K_fullimg"].to(dino_device)
+            if K_all.dim() == 4 and K_all.shape[1] == L:
+                K_sel = K_all
+            elif K_all.dim() == 4 and frame_indices is not None:
+                if frame_indices.dim() == 1:
+                    frame_indices = frame_indices.unsqueeze(0).expand(B, -1)
+                frame_indices = frame_indices.clamp(min=0, max=K_all.shape[1] - 1)
+                K_sel = K_all[torch.arange(B, device=dino_device)[:, None], frame_indices]
+            else:
+                return None, False
+
         if self.dinov3_use_precropped_image:
             crops = images
             if crops.shape[-2] != self.dinov3_crop_size or crops.shape[-1] != self.dinov3_crop_size:
@@ -148,10 +181,9 @@ class Pipeline(nn.Module):
                     crops, size=(self.dinov3_crop_size, self.dinov3_crop_size), mode="bilinear", align_corners=False
                 )
         else:
-            if "bbx_xys" not in inputs or inputs["bbx_xys"] is None:
+            if bbx_sel is None:
                 return None, False
-            bbx_xys = inputs["bbx_xys"]
-            bbx = bbx_xys.view(B * L, 3)
+            bbx = bbx_sel.view(B * L, 3)
 
             # center-size -> xyxy in image coords
             cx, cy, s = bbx[:, 0], bbx[:, 1], bbx[:, 2]
@@ -190,11 +222,10 @@ class Pipeline(nn.Module):
 
         # Camera encoder can be trainable: run with grad enabled.
         if self.use_camera_encoder and hasattr(self, "camera_encoder"):
-            if ("K_fullimg" in inputs and inputs["K_fullimg"] is not None
-                and "bbx_xys" in inputs and inputs["bbx_xys"] is not None):
+            if K_sel is not None and bbx_sel is not None:
                 K_crop = self._compute_crop_intrinsics(
-                    inputs["K_fullimg"].to(dino_feat.device),
-                    inputs["bbx_xys"].to(dino_feat.device),
+                    K_sel.to(dino_feat.device),
+                    bbx_sel.to(dino_feat.device),
                     self.dinov3_crop_size,
                 )
                 dino_feat = self.camera_encoder(dino_feat, K_crop)
@@ -238,6 +269,7 @@ class Pipeline(nn.Module):
             "f_cam_angvel": f_cam_angvel,  # (B, L, C=6)
             "f_imgseq": f_imgseq,
             "f_dino_imgseq": f_dino_imgseq,
+            "f_dino_frame": inputs.get("image_frame_indices", inputs.get("f_dinov3_frame", None)),
         }
         if train:
             f_condition = randomly_set_null_condition(f_condition, 0.1)

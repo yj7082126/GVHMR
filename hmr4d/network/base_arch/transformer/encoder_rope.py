@@ -9,6 +9,7 @@ from hmr4d.network.base_arch.embeddings.rotary_embedding_v2 import (
     ROPE,
     apply_rotary_emb_qk,
     get_nd_rotary_pos_embed,
+    get_nd_rotary_pos_embed_with_frame_indices,
 )
 
 
@@ -51,6 +52,7 @@ class RoPEAttention(nn.Module):
         attn_mask=None,
         key_padding_mask=None,
         context_shape=None,
+        context_frame_indices=None,
     ):
         # x: (B, L, C)
         # attn_mask: (Lq, Lk) or (B, Lq, Lk) or (B, N, Lq, Lk)
@@ -72,9 +74,15 @@ class RoPEAttention(nn.Module):
                 t, h, w = 1, int(context_shape[0]), int(context_shape[1])
             else:
                 t, h, w = int(context_shape[0]), int(context_shape[1]), int(context_shape[2])
-            cos, sin = get_nd_rotary_pos_embed(
-                self.rope_dim_list, (t, h, w), use_real=True
-            )  # (Lk, D), (Lk, D)
+            if context_frame_indices is None:
+                context_frame_indices = torch.arange(t, device=x.device).view(1, t).expand(B, -1)
+            cos, sin = get_nd_rotary_pos_embed_with_frame_indices(
+                self.rope_dim_list,
+                context_frame_indices.to(device=x.device),
+                height=h,
+                width=w,
+                use_real=True,
+            )  # (B, Lk, D), (B, Lk, D)
             xk_bshd = xk.transpose(1, 2)  # (B, Lk, N, D)
             xk_rot, _ = apply_rotary_emb_qk(xk_bshd, xk_bshd, (cos, sin), head_first=False)
             xk = xk_rot.transpose(1, 2)
@@ -167,6 +175,7 @@ class EncoderRoPEwithCABlock(nn.Module):
         memory_mask=None,
         memory_key_padding_mask=None,
         memory_shape=None,
+        memory_frame_indices=None,
     ):
         x = x + self.gate_msa * self._sa_block(
             self.norm1(x), attn_mask=attn_mask, key_padding_mask=tgt_key_padding_mask
@@ -177,6 +186,7 @@ class EncoderRoPEwithCABlock(nn.Module):
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
             context_shape=memory_shape,
+            context_frame_indices=memory_frame_indices,
         )
         x = x + self.gate_mlp * self.mlp(self.norm2(x))
         return x
@@ -186,7 +196,7 @@ class EncoderRoPEwithCABlock(nn.Module):
         x = self.attn(x, attn_mask=attn_mask, key_padding_mask=key_padding_mask)
         return x
 
-    def _ca_block(self, x, context, attn_mask=None, key_padding_mask=None, context_shape=None):
+    def _ca_block(self, x, context, attn_mask=None, key_padding_mask=None, context_shape=None, context_frame_indices=None):
         # x: (B, Lq, C), context: (B, Lk, C)
         x = self.cross_attn(
             x,
@@ -194,5 +204,6 @@ class EncoderRoPEwithCABlock(nn.Module):
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
             context_shape=context_shape,
+            context_frame_indices=context_frame_indices,
         )
         return x

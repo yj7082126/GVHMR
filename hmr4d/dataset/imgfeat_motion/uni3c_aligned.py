@@ -96,6 +96,7 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         )
         image = self._load_aligned_images(mid, rel_indices, bbx_sel)
         data["image"] = image
+        data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
         if "mask" not in data:
             data["mask"] = {}
