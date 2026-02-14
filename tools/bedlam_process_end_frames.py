@@ -5,8 +5,7 @@ from datetime import datetime
 import gc
 import queue
 
-import cv2
-import numpy as np
+import imageio.v3 as iio
 import torch
 import torch.multiprocessing as mp
 from tqdm import tqdm
@@ -50,29 +49,37 @@ def resolve_output_dir(video_path: Path, save_root: str | None) -> Path:
     return video_path.parent.parent / "vis" / video_path.stem
 
 
-def sample_end_frame_indices(range1, range2, frames_per_sample, tail_span, rng: np.random.Generator):
+def get_tail_frame_indices(range1, range2, end_frame_window):
     # valid clip range is [range1, range2), so last valid frame index is range2 - 1
     if range2 <= range1:
         return []
-    end_last = range2 - 1
-    tail_start = max(range1, range2 - tail_span)
-    candidates = np.arange(tail_start, end_last + 1, dtype=np.int64)
-    if len(candidates) == 0:
-        return []
-    if len(candidates) <= frames_per_sample:
-        chosen = candidates
-    else:
-        chosen = np.sort(rng.choice(candidates, size=frames_per_sample, replace=False))
-    return chosen.tolist()
+    tail_start = max(range1, range2 - end_frame_window)
+    return list(range(int(tail_start), int(range2)))
+
+
+def get_required_end_indices(range1, range2, end_frame_window, max_motion_frames):
+    """
+    Save targets for end-frame coverage:
+    1) all tail frames in [range2-end_frame_window, range2)
+    2) bridge frame at (start + max_motion_frames), clamped to valid range
+    """
+    tail = get_tail_frame_indices(range1, range2, end_frame_window=end_frame_window)
+    if range2 <= range1:
+        return tail
+    elif range2 - range1 > max_motion_frames:
+        tail = get_tail_frame_indices(range1, range1+max_motion_frames, end_frame_window=end_frame_window // 2)
+    return sorted(tail)
+    # bridge_idx = int(min(range2 - 1, range1 + int(max_motion_frames)))
+    # return sorted(set(tail + [bridge_idx]))
 
 
 def worker_loop(task_q, result_q, cfg):
     attach_file_logger(Path(cfg["log_path"]))
-    rng = np.random.default_rng(cfg["seed"])
-
     dataset_kwargs = {}
     if cfg["try_load_image"]:
         dataset_kwargs["load_image"] = True
+    if cfg["end_frame_window"] is not None:
+        dataset_kwargs["end_frame_window"] = int(cfg["end_frame_window"])
     try:
         dataset = BedlamDatasetV2(**dataset_kwargs)
     except TypeError:
@@ -88,10 +95,10 @@ def worker_loop(task_q, result_q, cfg):
         batch_start = task["batch_start"]
         batch_end = task["batch_end"]
         indices = task["indices"]
-        frames_per_sample = task["frames_per_sample"]
-        tail_span = task["tail_span"]
+        end_frame_window = task["end_frame_window"]
         save_root = task["save_root"]
         jpeg_quality = task["jpeg_quality"]
+        overwrite = task["overwrite"]
         slow_threshold_sec = task["slow_threshold_sec"]
 
         batch_t0 = datetime.now().timestamp()
@@ -103,8 +110,11 @@ def worker_loop(task_q, result_q, cfg):
                 sample_t0 = datetime.now().timestamp()
                 mid = dataset.idx2meta[i]
                 range1, range2 = dataset.mid_to_valid_range[str(mid)]
-                frame_indices = sample_end_frame_indices(
-                    range1, range2, frames_per_sample=frames_per_sample, tail_span=tail_span, rng=rng
+                frame_indices = get_required_end_indices(
+                    range1,
+                    range2,
+                    end_frame_window=end_frame_window,
+                    max_motion_frames=getattr(dataset, "max_motion_frames", 120),
                 )
 
                 video_path = video_dir / mid2vname(mid)
@@ -116,36 +126,49 @@ def worker_loop(task_q, result_q, cfg):
                     Log.warning(f"[SKIP] idx={i} empty_end_candidates mid={mid} range=({range1},{range2})")
                     continue
 
-                cap = cv2.VideoCapture(str(video_path))
-                if not cap.isOpened():
-                    skipped_samples += 1
-                    Log.warning(f"[SKIP] idx={i} cannot_open video={video_path}")
+                if overwrite:
+                    missing_indices = frame_indices
+                else:
+                    missing_indices = [f for f in frame_indices if not (out_dir / f"{int(f):05d}.jpg").exists()]
+                if len(missing_indices) < 3:
                     continue
 
                 saved = 0
-                for frame_idx in frame_indices:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-                    ret, frame = cap.read()
-                    if not ret:
+                for frame_idx in missing_indices:
+                    try:
+                        frame = iio.imread(video_path, index=int(frame_idx), plugin="pyav")
+                    except Exception as e:
+                        Log.warning(f"[SKIP] idx={i} failed_read frame={frame_idx} video={video_path} err={type(e).__name__}: {e}")
                         continue
-                    out_path = out_dir / f"{int(frame_idx):05d}.jpg"
-                    ok = cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-                    if not ok:
-                        Log.warning(f"[SKIP] idx={i} failed_write path={out_path}")
-                        continue
-                    saved += 1
 
-                cap.release()
+                    out_path = out_dir / f"{int(frame_idx):05d}.jpg"
+                    try:
+                        # imageio write is backend-dependent for quality; keep best-effort argument.
+                        iio.imwrite(out_path, frame, quality=jpeg_quality)
+                        saved += 1
+                    except TypeError:
+                        try:
+                            iio.imwrite(out_path, frame)
+                            saved += 1
+                        except Exception as e:
+                            Log.warning(f"[SKIP] idx={i} failed_write path={out_path} err={type(e).__name__}: {e}")
+                    except Exception as e:
+                        Log.warning(f"[SKIP] idx={i} failed_write path={out_path} err={type(e).__name__}: {e}")
+
                 saved_frames += saved
-                if saved == 0:
+                if saved == 0 and len(missing_indices) > 0:
                     skipped_samples += 1
-                    Log.warning(f"[SKIP] idx={i} no_end_frames video={video_path} range=({range1},{range2})")
+                    Log.warning(
+                        f"[SKIP] idx={i} no_end_frames_saved video={video_path} "
+                        f"range=({range1},{range2}) missing={len(missing_indices)}"
+                    )
 
                 dt = datetime.now().timestamp() - sample_t0
                 if dt > slow_threshold_sec:
                     Log.warning(
                         f"[SLOW] idx={i} took={dt:.2f}s video={video_path} "
-                        f"end_last={range2-1} saved={saved}"
+                        f"tail=[{frame_indices[0]},{frame_indices[-1]}] "
+                        f"saved={saved}/{len(missing_indices)}"
                     )
 
             result_q.put(
@@ -202,17 +225,12 @@ if __name__ == "__main__":
     parser.add_argument("--start-ind", type=int, default=0)
     parser.add_argument("--end-ind", type=int, default=37537)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--frames-per-sample", type=int, default=10)
-    parser.add_argument(
-        "--tail-span",
-        type=int,
-        default=None,
-        help="Sample end-frames from last `tail_span` valid frames. Default=max(2*frames_per_sample, 20).",
-    )
+    parser.add_argument("--end-frame-window", type=int, default=20, help="Save full tail window [range2-window, range2).")
     parser.add_argument("--batch-timeout-sec", type=int, default=120)
     parser.add_argument("--slow-threshold-sec", type=float, default=2.0)
     parser.add_argument("--save-root", type=str, default=None)
     parser.add_argument("--jpeg-quality", type=int, default=95)
+    parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--verbose-timing", action="store_true")
     parser.add_argument("--log-dir", type=str, default=None)
     parser.add_argument("--video-dir", type=str, default="/data/datasets/bedlam_download/")
@@ -221,12 +239,10 @@ if __name__ == "__main__":
 
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
-    if args.frames_per_sample <= 0:
-        raise ValueError("--frames-per-sample must be > 0")
+    if args.end_frame_window <= 0:
+        raise ValueError("--end-frame-window must be > 0")
     if not (1 <= args.jpeg_quality <= 100):
         raise ValueError("--jpeg-quality must be in [1, 100]")
-    if args.tail_span is not None and args.tail_span <= 0:
-        raise ValueError("--tail-span must be > 0")
 
     try:
         mp.set_start_method("spawn", force=True)
@@ -241,10 +257,9 @@ if __name__ == "__main__":
     if total_to_process == 0:
         raise ValueError("Empty index range: --end-ind must be greater than --start-ind")
 
-    tail_span = args.tail_span if args.tail_span is not None else max(2 * args.frames_per_sample, 20)
     Log.info(
-        f"Saving BEDLAM end-frames with frames_per_sample={args.frames_per_sample}, "
-        f"tail_span={tail_span}, batch_size={args.batch_size}"
+        f"Saving BEDLAM end-frames with end_frame_window={args.end_frame_window}, "
+        f"batch_size={args.batch_size}, overwrite={args.overwrite}"
     )
 
     worker_cfg = {
@@ -252,6 +267,7 @@ if __name__ == "__main__":
         "seed": 4,
         "log_path": str(log_path),
         "try_load_image": args.use_load_image,
+        "end_frame_window": args.end_frame_window,
     }
 
     ctx = mp.get_context("spawn")
@@ -261,7 +277,7 @@ if __name__ == "__main__":
     skipped_batches = 0
     total_saved_frames = 0
 
-    pbar = tqdm(total=total_to_process, desc="Saving BEDLAM end-frames (OpenCV)")
+    pbar = tqdm(total=total_to_process, desc="Saving BEDLAM end-frames (imageio+pyav)")
 
     for batch_start in range(args.start_ind, args.end_ind, args.batch_size):
         batch_end = min(batch_start + args.batch_size, args.end_ind)
@@ -280,10 +296,10 @@ if __name__ == "__main__":
                 "batch_start": batch_start,
                 "batch_end": batch_end,
                 "indices": indices,
-                "frames_per_sample": args.frames_per_sample,
-                "tail_span": tail_span,
+                "end_frame_window": args.end_frame_window,
                 "save_root": args.save_root,
                 "jpeg_quality": args.jpeg_quality,
+                "overwrite": args.overwrite,
                 "slow_threshold_sec": args.slow_threshold_sec,
             }
         )

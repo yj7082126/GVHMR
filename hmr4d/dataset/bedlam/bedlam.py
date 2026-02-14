@@ -149,6 +149,70 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             resolved.append(int(j))
         return resolved
 
+    def _sample_start_end_from_saved(self, mid, range1, range2):
+        """Sample clip [start, end) from saved frame indices.
+        Priority:
+        1) start/end window candidates + feasible length + load_indices fully saved
+        2) all saved frames + feasible length + load_indices fully saved
+        3) all saved frames + feasible length (if 1/2 impossible)
+        4) fallback to valid-range boundaries.
+        """
+        saved = self._get_saved_frame_indices(mid)
+        saved = sorted({int(f) for f in saved if range1 <= int(f) < range2})
+        mlength = range2 - range1
+        min_len_eff = min(self.min_motion_frames, mlength)
+        max_len_eff = min(self.max_motion_frames, mlength)
+
+        if len(saved) == 0:
+            Log.info(f"[BEDLAM] no saved frames for {mid}, fallback valid-range sample")
+            if mlength < self.min_motion_len:  # the minimal mlength is 30 when generating data
+                start = range1
+                length = mlength
+            else:
+                effect_max_motion_len = min(self.max_motion_frames, mlength)
+                length = np.random.randint(self.min_motion_frames, effect_max_motion_len + 1)  # [low, high)
+                start = np.random.randint(range1, range2 - length + 1)
+            return start, start + length
+
+        start_candidates = [f for f in saved if range1 <= f < range1 + self.end_frame_window]
+        end_candidates = [f for f in saved if range2 - self.end_frame_window <= f < range2]
+        if len(start_candidates) == 0:
+            start_candidates = saved
+        if len(end_candidates) == 0:
+            end_candidates = saved
+
+        saved_set = set(saved)
+        def _collect_pairs(starts, ends, require_saved_loaded=True):
+            pairs = []
+            for s in starts:
+                for e in ends:
+                    if e < s:
+                        continue
+                    length = e - s + 1
+                    if length < min_len_eff or length > max_len_eff:
+                        continue
+                    if require_saved_loaded:
+                        rel = self._resolve_load_indices(length)
+                        abs_indices = [s + r for r in rel]
+                        if not all((a in saved_set) for a in abs_indices):
+                            continue
+                    pairs.append((s, e + 1))  # exclusive end
+            return pairs
+
+        pairs = _collect_pairs(start_candidates, end_candidates, require_saved_loaded=True)
+        if len(pairs) == 0:
+            pairs = _collect_pairs(saved, saved, require_saved_loaded=True)
+        # if len(pairs) == 0:
+        #     pairs = _collect_pairs(saved, saved, require_saved_loaded=False)
+
+        if len(pairs) > 0:
+            s, e = pairs[int(np.random.randint(0, len(pairs)))]
+            return int(s), int(e)
+
+        # Last-resort: single saved frame clip (guarantees image frame exists).
+        s = int(saved[int(np.random.randint(0, len(saved)))])
+        return s, s + 1
+
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
         self.idx2meta = sorted(list(self.mid_to_valid_range.keys()))
@@ -160,35 +224,10 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         #           and : "skeleton": (J, 3)
         data = self.motion_files[mid].copy()
 
-        # Random select a subset
+        # Random select a subset from saved frame candidates.
         range1, range2 = self.mid_to_valid_range[mid]  # [range1, range2)
-        mlength = range2 - range1
-        min_motion_len = self.min_motion_frames
-        max_motion_len = self.max_motion_frames
-
-        if mlength < min_motion_len:  # the minimal mlength is 30 when generating data
-            start = range1
-            length = mlength
-            end = start + length
-        else:
-            # Pick clip end from pre-saved end-frame images in the tail of valid range.
-            saved_end_candidates = self._get_saved_frame_indices(mid)
-            tail_start = max(range1, range2 - self.end_frame_window)
-            saved_end_candidates = [f for f in saved_end_candidates if tail_start <= f < range2]
-            if len(saved_end_candidates) > 0:
-                end_inclusive = int(np.random.choice(saved_end_candidates))
-            else:
-                # Fallback to last valid frame if saved end-frames are missing.
-                end_inclusive = range2 - 1
-                Log.info(f"[BEDLAM] no saved end-frames for {mid}, fallback end={end_inclusive}")
-
-            end = end_inclusive + 1  # exclusive
-            max_len_from_end = max(1, min(max_motion_len, end - range1))
-            if max_len_from_end < min_motion_len:
-                length = max_len_from_end
-            else:
-                length = int(np.random.randint(min_motion_len, max_len_from_end + 1))
-            start = end - length
+        start, end = self._sample_start_end_from_saved(mid, range1, range2)
+        length = end - start
         data["start_end"] = (start, end)
         data["length"] = length
         data["meta"] = {"data_name": self.dataset_name, "idx": idx, "vid": mid, "start_end": (start, end)}
@@ -214,6 +253,9 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         abs_indices = [start + i for i in rel_indices]
         bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
         data["image"] = self._load_aligned_images(mid, abs_indices, bbx_sel)
+        if data["image"] is None:
+            Log.info(f"[BEDLAM] image loading failed for {mid}, start_end=({start},{end}), abs_indices={abs_indices}")
+        data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data
@@ -259,6 +301,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             "K_fullimg": data["cam_int"],  # (F, 3, 3)
             "f_imgseq": data["f_imgseq"],  # (F, D)
             "image": data["image"],  # (F, H, W, 3) or None
+            "image_frame_indices": data["image_frame_indices"],  # (N,)
             "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (F, 1280, 32, 32) or None
             "f_dinov3_frame": data["f_dinov3_frame"],  # (F,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)

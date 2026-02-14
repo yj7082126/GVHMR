@@ -88,13 +88,13 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
     def _load_data(self, idx):
         data = {}
         vid = self.idx2meta[idx]
-        meta = {"dataset_id": self.dataset_name, "vid": vid, "start_end": (0, len(self.labels[vid]["mask"]))}
-        data.update({"meta": meta})
-
         # Add useful data
         label = self.labels[vid]
         mask = label["mask_wham"]
         width_height = label["img_wh"]
+        
+        meta = {"dataset_id": self.dataset_name, "vid": vid, "start_end": (0, len(mask))}
+        data.update({"meta": meta})
         data.update(
             {
                 "length": len(mask),  # F
@@ -102,13 +102,9 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
                 "gender": label["gender"],  # str
                 "T_w2c": label["T_w2c"],  # (F, 4, 4)
                 "mask": mask,  # (F)
+                "K_fullimg": label["K_fullimg"],  # (3, 3)
             }
         )
-        K_fullimg = label["K_fullimg"]  # (3, 3)
-        if False:
-            K_fullimg = estimate_K(*width_height)
-        data["K_fullimg"] = K_fullimg
-
         # Preprocessed:  bbx, kp2d, image as feature
         bbx_xys = self.vid2bbx[vid]["bbx_xys"]  # (F, 3)
         kp2d = self.vid2kp2d[vid]  # (F, 17, 3)
@@ -121,16 +117,16 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         data["f_imgseq"] = f_imgseq  # (F, 1024)
         length = data["length"]
         rel_indices = self._resolve_load_indices(length)
-        abs_indices = rel_indices  # full sequence starts from 0
         bbx_sel = bbx_xys[torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else bbx_xys[0:0]
-        data["image"] = self._load_aligned_images(vid, abs_indices, bbx_sel)
+        data["image"] = self._load_aligned_images(vid, rel_indices, bbx_sel)
+        data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
 
         # to render a video
         vname = label["vname"]
         video_path = self.threedpw_dir / f"videos/{vname}.mp4"
         frame_id = torch.where(mask)[0].long()
         ds = 0.5
-        K_render = resize_K(K_fullimg, ds)
+        K_render = resize_K(data["K_fullimg"], ds)
         bbx_xys_render = bbx_xys * ds
         kp2d_render = kp2d.clone()
         kp2d_render[..., :2] *= ds

@@ -73,7 +73,8 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         category = vid.split("_")[0]
         vid_name = "_".join(vid.split("_")[1:])
         image_dir = self.emdb_root / f"{category}/{vid_name}/images"
-
+        width_height = (1440, 1920) if vid != "P0_09_outdoor_walk" else (720, 960)
+        
         crops = []
         for frame_idx, bbx in zip(frame_indices, bbx_xys):
             image_path = image_dir / f"{int(frame_idx):05d}.png"
@@ -81,7 +82,8 @@ class EmdbSmplFullSeqDataset(data.Dataset):
             if frame_bgr is None:
                 Log.info(f"[{self.dataset_name}] image not found/readable: {image_path}")
                 return None
-            frame = frame_bgr[..., ::-1]  # BGR -> RGB
+            frame = frame_bgr[:, :frame_bgr.shape[1]//2, ::-1]  # BGR -> RGB
+            frame = cv2.resize(frame, (width_height[0], width_height[1]))
 
             img_crop, _ = crop_and_resize(
                 frame,
@@ -153,6 +155,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
             else bbx_clip[0:0]
         )
         data["image"] = self._load_aligned_images(vid, abs_indices, bbx_sel)
+        data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
 
         # to render a video
         video_path = self.emdb_dir / f"videos/{vid}.mp4"

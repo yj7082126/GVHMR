@@ -138,6 +138,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         abs_indices = [start + i for i in rel_indices]
         bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
         data["image"] = self._load_aligned_images(vid, abs_indices, bbx_sel)
+        data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data
@@ -162,6 +163,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
             "K_fullimg": K_fullimg,  # (F, 3, 3)
             "f_imgseq": data["f_imgseq"],  # (F, D)
             "image": data["image"],  # (N, H, W, 3) or None
+            "image_frame_indices": data["image_frame_indices"],  # (N,)
             "f_dinov3_imgseq": data["f_dinov3_imgseq"],  # (N, 1280, 32, 32) or None
             "f_dinov3_frame": data["f_dinov3_frame"],  # (N,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
