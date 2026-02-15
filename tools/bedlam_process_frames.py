@@ -65,6 +65,49 @@ def sample_end_frame_indices(range1, range2, frames_per_sample, tail_span, rng: 
     return chosen.tolist()
 
 
+def get_saved_frame_indices_in_dir(frame_dir: Path):
+    if not frame_dir.exists():
+        return []
+    out = []
+    for fp in frame_dir.glob("*.jpg"):
+        try:
+            out.append(int(fp.stem))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def ensure_coverage_bins(cap, out_dir: Path, range1: int, range2: int, stride: int, jpeg_quality: int, saved_set: set[int]):
+    """
+    Ensure each [b, b+stride) bin in [range1, range2) has at least one saved frame.
+    If uncovered, save frame at bin start.
+    """
+    if range2 <= range1:
+        return 0
+    if stride <= 0:
+        return 0
+
+    saved = 0
+    for b in range(range1, range2, stride):
+        e = min(b + stride, range2)
+        covered = any((x >= b and x < e) for x in saved_set)
+        if covered:
+            continue
+
+        target = b
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(target))
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        out_path = out_dir / f"{int(target):05d}.jpg"
+        ok = cv2.imwrite(str(out_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+        if ok:
+            saved += 1
+            saved_set.add(int(target))
+    return saved
+
+
 def worker_loop(task_q, result_q, cfg):
     attach_file_logger(Path(cfg["log_path"]))
     rng = np.random.default_rng(cfg["seed"])
@@ -92,6 +135,7 @@ def worker_loop(task_q, result_q, cfg):
         start_source = task["start_source"]
         mode = task["mode"]
         tail_span = task["tail_span"]
+        coverage_stride = task["coverage_stride"]
         jpeg_quality = task["jpeg_quality"]
         slow_threshold_sec = task["slow_threshold_sec"]
 
@@ -116,6 +160,7 @@ def worker_loop(task_q, result_q, cfg):
 
                 out_dir = resolve_output_dir(video_path, save_root)
                 out_dir.mkdir(parents=True, exist_ok=True)
+                pre_saved = set(get_saved_frame_indices_in_dir(out_dir))
 
                 cap = cv2.VideoCapture(str(video_path))
                 if not cap.isOpened():
@@ -138,6 +183,7 @@ def worker_loop(task_q, result_q, cfg):
                             Log.warning(f"[SKIP] idx={i} failed_write path={out_path}")
                             break
                         saved_start += 1
+                        pre_saved.add(int(start + saved_start - 1))
                     saved += saved_start
 
                 if mode in ("end", "both"):
@@ -156,7 +202,20 @@ def worker_loop(task_q, result_q, cfg):
                             Log.warning(f"[SKIP] idx={i} failed_write path={out_path}")
                             continue
                         saved_end += 1
+                        pre_saved.add(int(frame_idx))
                     saved += saved_end
+
+                # Always enforce 5-frame coverage (or provided stride) over valid range.
+                saved_cov = ensure_coverage_bins(
+                    cap=cap,
+                    out_dir=out_dir,
+                    range1=int(range1),
+                    range2=int(range2),
+                    stride=int(coverage_stride),
+                    jpeg_quality=jpeg_quality,
+                    saved_set=pre_saved,
+                )
+                saved += saved_cov
 
                 cap.release()
                 saved_frames += saved
@@ -224,6 +283,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--frames-per-sample", type=int, default=10)
     parser.add_argument("--mode", type=str, default="both", choices=["start", "end", "both"])
+    parser.add_argument("--coverage-stride", type=int, default=5, help="Ensure at least one saved frame in each stride bin.")
     parser.add_argument(
         "--tail-span",
         type=int,
@@ -245,6 +305,8 @@ if __name__ == "__main__":
         raise ValueError("--batch-size must be > 0")
     if args.frames_per_sample <= 0:
         raise ValueError("--frames-per-sample must be > 0")
+    if args.coverage_stride <= 0:
+        raise ValueError("--coverage-stride must be > 0")
     if not (1 <= args.jpeg_quality <= 100):
         raise ValueError("--jpeg-quality must be in [1, 100]")
     if args.tail_span is not None and args.tail_span <= 0:
@@ -303,6 +365,7 @@ if __name__ == "__main__":
                 "start_source": args.start_source,
                 "mode": args.mode,
                 "tail_span": tail_span,
+                "coverage_stride": args.coverage_stride,
                 "jpeg_quality": args.jpeg_quality,
                 "slow_threshold_sec": args.slow_threshold_sec,
             }
