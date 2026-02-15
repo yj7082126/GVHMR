@@ -6,11 +6,10 @@ defaults:
     - override /optimizer: adamw_2e-4
     - override /scheduler_cfg: epoch_half_200_350
     - override /train_datasets:
-        - pure_motion_amass/v11
+        - pure_motion_amass/v20
         - imgfeat_bedlam/v2_with_image
         - imgfeat_h36m/v1
         - imgfeat_3dpw/v1_with_image
-        - synth_uni3c_aligned/v1
     - override /test_datasets:
         - emdb1/v1_with_image
         - emdb2/v1_with_image
@@ -28,7 +27,7 @@ defaults:
     - override /network: gvhmr/relative_transformer_ca
 
 exp_name_base: crossattn
-exp_name_var: "_v3"
+exp_name_var: "_v4"
 exp_name: ${exp_name_base}${exp_name_var}
 data_name: mocap_mixed_v2_ca_dinov3
 
