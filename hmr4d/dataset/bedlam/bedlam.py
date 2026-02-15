@@ -210,8 +210,9 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             return int(s), int(e)
 
         # Last-resort: single saved frame clip (guarantees image frame exists).
-        s = int(saved[int(np.random.randint(0, len(saved)))])
-        return s, s + 1
+        # s = int(saved[int(np.random.randint(0, len(saved)))])
+        # return s, s + 1
+        return start_candidates[0], end_candidates[-1] + 1
 
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
