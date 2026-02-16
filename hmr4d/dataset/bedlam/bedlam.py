@@ -39,7 +39,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         self.root = Path("inputs/BEDLAM/hmr4d_support")
         self.video_root = Path("/data/datasets/bedlam_download")
         
-        self.min_motion_frames = 60
+        self.min_motion_frames = 45
         self.max_motion_frames = 120
         self.lazy_load = lazy_load
         self.dataset_name = "bedlam"
@@ -126,7 +126,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             frame_path = frame_dir / f"{int(frame_idx):05d}.jpg"
             frame_bgr = cv2.imread(str(frame_path))
             if frame_bgr is None:
-                Log.info(f"[BEDLAM] saved frame not found/readable: {frame_path}")
+                Log.info(f"[BEDLAM] saved frame not found/readable: {mid} {frame_indices} {frame_path}")
                 return None
             frame = frame_bgr[..., ::-1]  # BGR -> RGB
             img_crop, _ = crop_and_resize(
@@ -161,11 +161,11 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         saved = sorted({int(f) for f in saved if range1 <= int(f) < range2})
         mlength = range2 - range1
 
-        # For short ranges, always use full valid range.
-        if mlength <= self.min_motion_frames:
-            return int(range1), int(range2)
+        # # For short ranges, always use full valid range.
+        # if mlength <= self.min_motion_frames:
+        #     return int(range1), int(range2)
 
-        min_len_eff = self.min_motion_frames
+        min_len_eff = min(self.min_motion_frames, mlength)
         max_len_eff = min(self.max_motion_frames, mlength)
 
         if len(saved) == 0:
@@ -175,15 +175,13 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             start = np.random.randint(range1, range2 - length + 1)
             return start, start + length
 
-        start_candidates = [f for f in saved if range1 <= f < range1 + self.end_frame_window]
-        end_candidates = [f for f in saved if range2 - self.end_frame_window <= f < range2]
-        if len(start_candidates) == 0:
-            start_candidates = saved
-        if len(end_candidates) == 0:
-            end_candidates = saved
+        start_candidates = sorted([f for f in saved if range1 <= f < range1 + self.end_frame_window])
+        end_candidates = [f for f in saved if start_candidates[0]+min_len_eff-1 <= f < start_candidates[-1]+max_len_eff]
+        if len(start_candidates) == 0 or len(end_candidates) == 0:
+            print(f"[BEDLAM] no valid start/end candidates for {mid}, fallback to saved clip")
+            return saved[0], saved[-1]
 
-        saved_set = set(saved)
-        def _collect_pairs(starts, ends, require_saved_loaded=True):
+        def _collect_pairs(starts, ends):
             pairs = []
             for s in starts:
                 for e in ends:
@@ -192,31 +190,25 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
                     length = e - s + 1
                     if length < min_len_eff or length > max_len_eff:
                         continue
-                    if require_saved_loaded:
-                        rel = self._resolve_load_indices(length)
-                        abs_indices = [s + r for r in rel]
-                        if not all((a in saved_set) for a in abs_indices):
-                            continue
-                    pairs.append((s, e + 1))  # exclusive end
+                    pairs.append((s, e))
             return pairs
 
-        pairs = _collect_pairs(start_candidates, end_candidates, require_saved_loaded=True)
-        if len(pairs) == 0:
-            pairs = _collect_pairs(saved, saved, require_saved_loaded=True)
+        pairs = _collect_pairs(start_candidates, end_candidates)
+        s, e = pairs[int(np.random.randint(0, len(pairs)))]
         # if len(pairs) == 0:
-        #     pairs = _collect_pairs(saved, saved, require_saved_loaded=False)
+        #     pairs = _collect_pairs(saved, saved)
 
-        if len(pairs) > 0:
-            s, e = pairs[int(np.random.randint(0, len(pairs)))]
+        # if len(pairs) > 0:
+        #     s, e = pairs[int(np.random.randint(0, len(pairs)))]
         # Last-resort: single saved frame clip (guarantees image frame exists).
-        s = int(start_candidates[0])
-        e = int(min(range2, s + max_len_eff))
-        if (e - s) > self.max_motion_frames:
-            e = s + self.max_motion_frames
-            if e > range2:
-                e = range2
-                s = max(range1, e - self.max_motion_frames)
-        return s, e
+        # s = int(start_candidates[0])
+        # e = int(min(range2, s + max_len_eff))
+        # if (e - s) > self.max_motion_frames:
+        #     e = s + self.max_motion_frames
+        #     if e > range2:
+        #         e = range2
+        #         s = max(range1, e - self.max_motion_frames)
+        return s, e+1
 
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
@@ -256,7 +248,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         data["bbx_xys"] = f_img_dict["bbx_xys"][start_mapped:end_mapped].float()  # (L, 4)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
-        rel_indices = self._resolve_load_indices(end - start)
+        rel_indices = self._resolve_load_indices(length)
         abs_indices = [start + i for i in rel_indices]
         bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
         data["image"] = self._load_aligned_images(mid, abs_indices, bbx_sel)
