@@ -80,6 +80,7 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
     def _load_data(self, idx):
         mid = self.idx2meta[idx]
         batch = torch.load(self.root / f"{mid}/batch_meta.pt")
+        batch['meta']['vid'] = self.root / f"{mid}/final.mp4"
         del batch['index']
         batch["_dinov3_mid"] = mid
         return batch

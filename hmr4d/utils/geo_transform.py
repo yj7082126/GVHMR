@@ -696,3 +696,36 @@ def move_to_start_point_face_z(verts, J_regressor, hip_j=[1,2], shoulder_j=[16,1
     joints = einsum(J_regressor, verts, "j v, l v i -> l j i")  # (L, J, 3)
 
     return verts, joints
+
+# ================== Match to bbx cropped imgs ================== #
+def make_K_crop(K_full, bbx, crop_size):
+    # bbx = [cx, cy, size]
+    K = K_full.clone().float()
+    cx_b, cy_b, s = bbx[0].float(), bbx[1].float(), bbx[2].float()
+    hs = torch.clamp(0.5 * s, min=1e-6)
+    scale = (crop_size - 1) / (2.0 * hs)
+
+    fx = K[0, 0] * scale
+    fy = K[1, 1] * scale
+    cx = (K[0, 2] - (cx_b - hs)) * scale
+    cy = (K[1, 2] - (cy_b - hs)) * scale
+
+    Kc = torch.zeros((3, 3), dtype=K.dtype, device=K.device)
+    Kc[0, 0] = fx
+    Kc[1, 1] = fy
+    Kc[0, 2] = cx
+    Kc[1, 2] = cy
+    Kc[2, 2] = 1.0
+    return Kc
+
+def map_kp2d_to_crop(kp2d_full, bbx, crop_size):
+    # kp2d_full: (J,2 or 3) in full-image coords
+    kp = kp2d_full.clone().float()
+    x, y = kp[:, 0], kp[:, 1]
+    cx, cy, s = bbx[0].float(), bbx[1].float(), bbx[2].float()
+    hs = torch.clamp(0.5 * s, min=1e-6)
+    x0, y0 = cx - hs, cy - hs
+    scale = (crop_size - 1) / (2.0 * hs)
+    kp[:, 0] = (x - x0) * scale
+    kp[:, 1] = (y - y0) * scale
+    return kp

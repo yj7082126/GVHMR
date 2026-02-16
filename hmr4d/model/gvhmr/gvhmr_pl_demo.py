@@ -8,7 +8,7 @@ from hmr4d.utils.geo.hmr_cam import normalize_kp2d
 
 
 class DemoPL(pl.LightningModule):
-    def __init__(self, pipeline):
+    def __init__(self, pipeline, **kwargs):
         super().__init__()
         self.pipeline = instantiate(pipeline, _recursive_=False)
 
