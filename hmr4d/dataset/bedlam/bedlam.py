@@ -160,18 +160,19 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         saved = self._get_saved_frame_indices(mid)
         saved = sorted({int(f) for f in saved if range1 <= int(f) < range2})
         mlength = range2 - range1
-        min_len_eff = min(self.min_motion_frames, mlength)
+
+        # For short ranges, always use full valid range.
+        if mlength <= self.min_motion_frames:
+            return int(range1), int(range2)
+
+        min_len_eff = self.min_motion_frames
         max_len_eff = min(self.max_motion_frames, mlength)
 
         if len(saved) == 0:
             Log.info(f"[BEDLAM] no saved frames for {mid}, fallback valid-range sample")
-            if mlength < self.min_motion_len:  # the minimal mlength is 30 when generating data
-                start = range1
-                length = mlength
-            else:
-                effect_max_motion_len = min(self.max_motion_frames, mlength)
-                length = np.random.randint(self.min_motion_frames, effect_max_motion_len + 1)  # [low, high)
-                start = np.random.randint(range1, range2 - length + 1)
+            effect_max_motion_len = min(self.max_motion_frames, mlength)
+            length = np.random.randint(self.min_motion_frames, effect_max_motion_len + 1)  # [low, high)
+            start = np.random.randint(range1, range2 - length + 1)
             return start, start + length
 
         start_candidates = [f for f in saved if range1 <= f < range1 + self.end_frame_window]
@@ -255,8 +256,28 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
         data["image"] = self._load_aligned_images(mid, abs_indices, bbx_sel)
         if data["image"] is None:
-            Log.info(f"[BEDLAM] image loading failed for {mid}, start_end=({start},{end}), abs_indices={abs_indices}")
-        data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
+            # Fallback: replace missing requested frames with nearest saved frame inside [start, end),
+            # and keep image tensor size consistent with len(load_indices).
+            saved_clip = sorted(
+                {int(f) for f in self._get_saved_frame_indices(mid) if start <= int(f) < end}
+            )
+            if len(saved_clip) > 0:
+                abs_fallback = [min(saved_clip, key=lambda x: abs(x - a)) for a in abs_indices]
+                rel_fallback = [max(0, min((end - start) - 1, af - start)) for af in abs_fallback]
+                bbx_sel_fb = (
+                    data["bbx_xys"][torch.as_tensor(rel_fallback, dtype=torch.long)]
+                    if len(rel_fallback) > 0
+                    else data["bbx_xys"][0:0]
+                )
+                data["image"] = self._load_aligned_images(mid, abs_fallback, bbx_sel_fb)
+                data["image_frame_indices"] = torch.as_tensor(rel_fallback, dtype=torch.long)
+            else:
+                Log.info(f"[BEDLAM] image loading failed for {mid}, start_end=({start},{end}), abs_indices={abs_indices}")
+                n_img = max(1, len(rel_indices))
+                data["image"] = torch.zeros((n_img, self.image_crop_size, self.image_crop_size, 3), dtype=torch.uint8)
+                data["image_frame_indices"] = torch.as_tensor(rel_indices if len(rel_indices) > 0 else [0], dtype=torch.long)
+        else:
+            data["image_frame_indices"] = torch.as_tensor(rel_indices, dtype=torch.long)
         data["f_dinov3_imgseq"], data["f_dinov3_frame"] = None, None
 
         return data
