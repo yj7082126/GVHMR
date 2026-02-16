@@ -208,12 +208,15 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
 
         if len(pairs) > 0:
             s, e = pairs[int(np.random.randint(0, len(pairs)))]
-            return int(s), int(e)
-
         # Last-resort: single saved frame clip (guarantees image frame exists).
-        # s = int(saved[int(np.random.randint(0, len(saved)))])
-        # return s, s + 1
-        return start_candidates[0], end_candidates[-1] + 1
+        s = int(start_candidates[0])
+        e = int(min(range2, s + max_len_eff))
+        if (e - s) > self.max_motion_frames:
+            e = s + self.max_motion_frames
+            if e > range2:
+                e = range2
+                s = max(range1, e - self.max_motion_frames)
+        return s, e
 
     def _get_idx2meta(self):
         # sum_frame = sum([e-s for s, e in self.mid_to_valid_range.values()])
@@ -229,6 +232,8 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         # Random select a subset from saved frame candidates.
         range1, range2 = self.mid_to_valid_range[mid]  # [range1, range2)
         start, end = self._sample_start_end_from_saved(mid, range1, range2)
+        # Hard cap clip length to max_motion_frames.
+
         length = end - start
         data["start_end"] = (start, end)
         data["length"] = length
