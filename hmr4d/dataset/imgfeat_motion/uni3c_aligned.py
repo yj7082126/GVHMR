@@ -118,3 +118,4 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
 
 group_name = "train_datasets/synth_uni3c_aligned"
 MainStore.store(name="v1", node=builds(Uni3CAlignedDatasetV1), group=group_name)
+MainStore.store(name="v1_0-1", node=builds(Uni3CAlignedDatasetV1, load_image=True, load_indices=[0, -1]), group=group_name)

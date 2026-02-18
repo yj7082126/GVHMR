@@ -200,3 +200,8 @@ MainStore.store(
     node=builds(ThreedpwSmplFullSeqDataset, flip_test=False, load_image=True),
     group="test_datasets/3dpw",
 )
+MainStore.store(
+    name="with_image_0-1",
+    node=builds(ThreedpwSmplFullSeqDataset, flip_test=False, load_image=True, load_indices=[0, -1]),
+    group="test_datasets/3dpw",
+)

@@ -251,9 +251,9 @@ class Renderer:
 
         return pts_full.detach().cpu(), valid.detach().cpu().to(dtype=torch.float32)
 
-    def render_openpose(self, joints, valids, canvas=None):
-        openpose_idx = smpl_to_openpose(model_type='smplx', use_hands=False, use_face=False,
-                     use_face_contour=False, openpose_format='coco19')
+    def render_openpose(self, joints, valids, model_type='smplx', openpose_format='coco19', canvas=None):
+        openpose_idx = smpl_to_openpose(model_type=model_type, use_hands=False, use_face=False,
+                     use_face_contour=False, openpose_format=openpose_format)
         
         if canvas is None:
             canvas = np.zeros(shape=(self.height, self.width, 3), dtype=np.uint8)

@@ -195,3 +195,4 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
 # 3DPW
 MainStore.store(name="v1", node=builds(ThreedpwSmplDataset), group="train_datasets/imgfeat_3dpw")
 MainStore.store(name="v1_with_image", node=builds(ThreedpwSmplDataset, load_image=True), group="train_datasets/imgfeat_3dpw")
+MainStore.store(name="v1_with_image_0-1", node=builds(ThreedpwSmplDataset, load_image=True, load_indices=[0, -1]), group="train_datasets/imgfeat_3dpw")

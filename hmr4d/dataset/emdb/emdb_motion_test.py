@@ -227,6 +227,13 @@ MainStore.store(
     group="test_datasets/emdb1",
 )
 MainStore.store(
+    name="v1_with_image_0-1",
+    node=builds(EmdbSmplFullSeqDataset, populate_full_signature=True, load_image=True, load_indices=[0, -1]),
+    group="test_datasets/emdb1",
+)
+
+
+MainStore.store(
     name="v1",
     node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True),
     group="test_datasets/emdb2",
@@ -239,5 +246,10 @@ MainStore.store(
 MainStore.store(
     name="v1_with_image",
     node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True, load_image=True),
+    group="test_datasets/emdb2",
+)
+MainStore.store(
+    name="v1_with_image_0-1",
+    node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True, load_image=True, load_indices=[0, -1]),
     group="test_datasets/emdb2",
 )

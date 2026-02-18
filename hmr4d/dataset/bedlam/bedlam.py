@@ -352,3 +352,4 @@ group_name = "train_datasets/imgfeat_bedlam"
 MainStore.store(name="v2", node=builds(BedlamDatasetV2), group=group_name)
 MainStore.store(name="v2_random1024", node=builds(BedlamDatasetV2, random1024=True), group=group_name)
 MainStore.store(name="v2_with_image", node=builds(BedlamDatasetV2, load_image=True), group=group_name)
+MainStore.store(name="v2_with_image_0-1", node=builds(BedlamDatasetV2, load_image=True, load_indices=[0, -1]), group=group_name)
