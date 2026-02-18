@@ -47,7 +47,7 @@ To reproduce the 3DPW, RICH, and EMDB results in a single run, use the following
     python -m tools.train global/task=gvhmr/test_3dpw_emdb_rich exp=gvhmr/mixed/mixed ckpt_path=inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt
     ```
     ```shell
-    python -m tools.train global/task=gvhmr/test_3dpw_emdb_rich exp=gvhmr/test/test_dinov3 ckpt_path=training_results/mocap_mixed_v2_ca_dinov3/crossattn_v4/checkpoints/e099-s037700.ckpt
+    python -m tools.train global/task=gvhmr/test_3dpw_emdb_rich exp=gvhmr/test/test_dinov3 ckpt_path=training_results/mocap_mixed_v2_ca_dinov3/crossattn_v4/checkpoints/e159-s060320.ckpt
     ```
     To test individual datasets, change `global/task` to `gvhmr/test_3dpw`, `gvhmr/test_rich`, or `gvhmr/test_emdb`.
 
