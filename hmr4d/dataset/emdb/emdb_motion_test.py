@@ -6,7 +6,7 @@ import cv2
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
 
-from hmr4d.utils.geo_transform import compute_cam_angvel
+from hmr4d.utils.geo_transform import compute_cam_angvel, compute_cam_tvel, normalize_T_w2c
 from pytorch3d.transforms import quaternion_to_matrix
 from hmr4d.utils.geo.hmr_cam import estimate_K, resize_K
 from hmr4d.utils.geo.flip_utils import flip_kp2d_coco17
@@ -29,6 +29,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         image_crop_size=512,
         emdb_root="/data/datasets/emdb",
         load_indices=[0],
+        use_tvec=False,
     ):
         """
         split: 1 for EMDB-1, 2 for EMDB-2
@@ -42,6 +43,7 @@ class EmdbSmplFullSeqDataset(data.Dataset):
         self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
         self.emdb_root = Path(emdb_root)
+        self.use_tvec = use_tvec
         Log.info(f"[{self.dataset_name}] Full sequence, split={split}")
 
         # Load evaluation protocol from WHAM labels
@@ -139,7 +141,20 @@ class EmdbSmplFullSeqDataset(data.Dataset):
             R_w2c = quaternion_to_matrix(traj[:, [6, 3, 4, 5]]).mT  # (L, 3, 3)
         else:  # GT
             R_w2c = data["T_w2c"][:, :3, :3]  # (L, 3, 3)
-        data["cam_angvel"] = compute_cam_angvel(R_w2c)  # (L, 6)
+        if self.use_tvec:
+            normed_T_w2c = normalize_T_w2c(data["T_w2c"])
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+            data["cam_angvel"] = compute_cam_angvel(normed_T_w2c[:, :3, :3])  # (L, 6)
+            data["cam_tvel"] = compute_cam_tvel(normed_T_w2c[:, :3, 3])  # (L, 3)
+            data["noisy_cam_tvel"] = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])  # (L, 3)
+        else:
+            data["cam_angvel"] = compute_cam_angvel(R_w2c)  # (L, 6)
+            data["cam_tvel"] = None
+            data["noisy_cam_tvel"] = None
 
         # image bbx, features
         bbx_xys = label["bbx_xys"]
@@ -231,6 +246,11 @@ MainStore.store(
     node=builds(EmdbSmplFullSeqDataset, populate_full_signature=True, load_image=True, load_indices=[0, -1]),
     group="test_datasets/emdb1",
 )
+MainStore.store(
+    name="v1_with_tvec",
+    node=builds(EmdbSmplFullSeqDataset, populate_full_signature=True, use_tvec=True),
+    group="test_datasets/emdb1",
+)
 
 
 MainStore.store(
@@ -251,5 +271,10 @@ MainStore.store(
 MainStore.store(
     name="v1_with_image_0-1",
     node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True, load_image=True, load_indices=[0, -1]),
+    group="test_datasets/emdb2",
+)
+MainStore.store(
+    name="v1_with_tvec",
+    node=builds(EmdbSmplFullSeqDataset, split=2, populate_full_signature=True, use_tvec=True),
     group="test_datasets/emdb2",
 )

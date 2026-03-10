@@ -6,7 +6,7 @@ from hmr4d.configs import MainStore, builds
 from hmr4d.utils.pylogger import Log
 from hmr4d.dataset.imgfeat_motion.base_dataset import ImgfeatMotionDatasetBase
 from hmr4d.utils.smplx_utils import make_smplx
-from hmr4d.utils.geo_transform import compute_cam_angvel
+from hmr4d.utils.geo_transform import compute_cam_angvel, compute_cam_tvel, normalize_T_w2c
 from hmr4d.utils.geo.hmr_global import get_c_rootparam, get_R_c2gv, get_tgtcoord_rootparam
 from hmr4d.utils.video_io_utils import read_video_np
 from hmr4d.utils.net_utils import get_valid_mask, repeat_to_max_len, repeat_to_max_len_dict
@@ -20,6 +20,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         motion_frames=120,  # H36M's videos are 25fps and very long
         lazy_load=False,
         convert_global_pose=False,
+        use_tvec=False,
     ):
         # Path
         self.root = Path(root)
@@ -28,6 +29,7 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         self.lazy_load = lazy_load
         self.dataset_name = "h36m"
         self.convert_global_pose = convert_global_pose
+        self.use_tvec = use_tvec
         super().__init__()
 
     def _load_dataset(self):
@@ -136,7 +138,21 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         bbx_xys = data["bbx_xys"]  # (F, 3)
         K_fullimg = data["K_fullimg"].repeat(length, 1, 1)  # (F, 3, 3)
         f_imgseq = data["f_imgseq"]  # (F, 1024)
-        cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])  # (F, 6)  slightly different from WHAM
+        normed_T_w2c = normalize_T_w2c(T_w2c)
+        if self.use_tvec:
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+
+            cam_angvel = compute_cam_angvel(normed_T_w2c[:, :3, :3])  # (F, 6)
+            cam_tvel = compute_cam_tvel(normed_T_w2c[:, :3, 3])  # (F, 3)
+            noisy_cam_tvel = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])  # (F, 3)
+        else:
+            cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])  # (F, 6)
+            cam_tvel = None
+            noisy_cam_tvel = None
 
         # Returns: do not forget to make it batchable! (last lines)
         max_len = self.motion_frames
@@ -154,6 +170,8 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
             "f_dinov3_frame": data["f_dinov3_frame"],  # (N,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
+            "cam_tvel": cam_tvel,  # (F, 3)
+            "noisy_cam_tvel": noisy_cam_tvel,  # (F, 3)
             "mask": {
                 "valid": get_valid_mask(max_len, length),
                 "vitpose": False,
@@ -173,6 +191,8 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
         return_data["f_imgseq"] = repeat_to_max_len(return_data["f_imgseq"], max_len)
         return_data["kp2d"] = repeat_to_max_len(return_data["kp2d"], max_len)
         return_data["cam_angvel"] = repeat_to_max_len(return_data["cam_angvel"], max_len)
+        return_data["cam_tvel"] = repeat_to_max_len(return_data["cam_tvel"], max_len)
+        return_data["noisy_cam_tvel"] = repeat_to_max_len(return_data["noisy_cam_tvel"], max_len)
 
         return return_data
 
@@ -180,3 +200,4 @@ class H36mSmplDataset(ImgfeatMotionDatasetBase):
 group_name = "train_datasets/imgfeat_h36m"
 node_v1 = builds(H36mSmplDataset)
 MainStore.store(name="v1", node=node_v1, group=group_name)
+MainStore.store(name="v1_with_tvec", node=builds(H36mSmplDataset, use_tvec=True), group=group_name)

@@ -107,7 +107,8 @@ class NetworkEncoderRoPE(nn.Module):
                 zero_module(nn.Linear(self.imgseq_dim, latent_dim)),
             )
 
-    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None, f_dino_imgseq=None, f_dino_frame=None):
+    def forward(self, length, obs=None, f_cliffcam=None, f_cam_angvel=None, f_imgseq=None,
+                f_dino_imgseq=None, f_dino_frame=None):
         """
         Args:
             x: None we do not use it

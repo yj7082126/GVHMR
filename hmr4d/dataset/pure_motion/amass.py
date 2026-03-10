@@ -20,6 +20,7 @@ class AmassDataset(BaseDataset):
         l_factor=1.5,  # speed augmentation
         skip_moyo=True,  # not contained in the ICCV19 released version
         cam_augmentation="v11",
+        use_tvec=False,
         random1024=False,  # DEBUG
         limit_size=None,
         width=1000,
@@ -32,7 +33,7 @@ class AmassDataset(BaseDataset):
         self.random1024 = random1024
         self.skip_moyo = skip_moyo
         self.dataset_name = "AMASS"
-        super().__init__(cam_augmentation, limit_size, width, height, f_fullframe)
+        super().__init__(cam_augmentation, limit_size, width, height, f_fullframe, use_tvec=use_tvec)
 
     def _load_dataset(self):
         filename = self.root / "smplxpose_v2.pth"
@@ -125,3 +126,5 @@ class AmassDataset(BaseDataset):
 group_name = "train_datasets/pure_motion_amass"
 MainStore.store(name="v11", node=builds(AmassDataset, cam_augmentation="v11"), group=group_name)
 MainStore.store(name="v20", node=builds(AmassDataset, cam_augmentation="v20"), group=group_name)
+MainStore.store(name="v11_with_tvec", node=builds(AmassDataset, cam_augmentation="v11", use_tvec=True), group=group_name)
+MainStore.store(name="v20_with_tvec", node=builds(AmassDataset, cam_augmentation="v20", use_tvec=True), group=group_name)

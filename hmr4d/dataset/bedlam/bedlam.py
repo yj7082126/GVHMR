@@ -14,7 +14,7 @@ import hmr4d.utils.matrix as matrix
 from hmr4d.utils.net_utils import get_valid_mask, repeat_to_max_len, repeat_to_max_len_dict
 from hmr4d.dataset.imgfeat_motion.base_dataset import ImgfeatMotionDatasetBase
 from hmr4d.dataset.bedlam.utils import mid2featname, mid2vname
-from hmr4d.utils.geo_transform import compute_cam_angvel, apply_T_on_points
+from hmr4d.utils.geo_transform import compute_cam_angvel, normalize_T_w2c, compute_cam_tvel
 from hmr4d.utils.geo.hmr_global import get_T_w2c_from_wcparams, get_c_rootparam, get_R_c2gv
 from hmr4d.network.hmr2.utils.preproc import crop_and_resize
 
@@ -35,6 +35,7 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         load_image=False,
         load_indices=[0],
         end_frame_window=20,
+        use_tvec=False
     ):
         self.root = Path("inputs/BEDLAM/hmr4d_support")
         self.video_root = Path("/data/datasets/bedlam_download")
@@ -47,6 +48,8 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         self.load_image = load_image
         self.load_indices = [int(i) for i in load_indices]
         self.end_frame_window = int(end_frame_window)
+        self.use_tvec = use_tvec
+        
         self.image_crop_size = 512
         self.mid_to_saved_frames = {}
 
@@ -248,6 +251,8 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         data["bbx_xys"] = f_img_dict["bbx_xys"][start_mapped:end_mapped].float()  # (L, 4)
         data["img_wh"] = f_img_dict["img_wh"]  # (2)
         data["kp2d"] = torch.zeros((end - start), 17, 3)  # (L, 17, 3)  # do not provide kp2d
+        
+        
         rel_indices = self._resolve_load_indices(length)
         abs_indices = [start + i for i in rel_indices]
         bbx_sel = data["bbx_xys"][torch.as_tensor(rel_indices, dtype=torch.long)] if len(rel_indices) > 0 else data["bbx_xys"][0:0]
@@ -303,9 +308,23 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             offset=data["skeleton"][0],
         )  # (F, 4, 4)
         R_c2gv = get_R_c2gv(T_w2c[:, :3, :3], gravity_vec)  # (F, 3, 3)
-
+        normed_T_w2c = normalize_T_w2c(T_w2c)
+        
         # cam_angvel (slightly different from WHAM)
-        cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])  # (F, 6)
+        if self.use_tvec:
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+            
+            cam_angvel = compute_cam_angvel(normed_T_w2c[:, :3, :3])  # (F, 6)
+            cam_tvel = compute_cam_tvel(normed_T_w2c[:, :3, 3])  # (F, 3)
+            noisy_cam_tvel = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])  # (F, 3)
+        else:
+            cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])  # (F, 6)
+            cam_tvel = None
+            noisy_cam_tvel = None
 
         # Returns: do not forget to make it batchable! (last lines)
         max_len = self.max_motion_frames
@@ -325,6 +344,9 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
             "f_dinov3_frame": data["f_dinov3_frame"],  # (F,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
+            "cam_tvel": cam_tvel,  # (F, 3)
+            "noisy_cam_tvel": noisy_cam_tvel,  # (F, 3)
+            "T_w2c": normed_T_w2c,  # (F, 4, 4)
             "mask": {
                 "valid": get_valid_mask(max_len, length),
                 "vitpose": False,
@@ -345,6 +367,10 @@ class BedlamDatasetV2(ImgfeatMotionDatasetBase):
         return_data["f_imgseq"] = repeat_to_max_len(return_data["f_imgseq"], max_len)
         return_data["kp2d"] = repeat_to_max_len(return_data["kp2d"], max_len)
         return_data["cam_angvel"] = repeat_to_max_len(return_data["cam_angvel"], max_len)
+        return_data["cam_tvel"] = repeat_to_max_len(return_data["cam_tvel"], max_len)
+        return_data["noisy_cam_tvel"] = repeat_to_max_len(return_data["noisy_cam_tvel"], max_len)
+        return_data["T_w2c"] = repeat_to_max_len(return_data["T_w2c"], max_len)
+
         return return_data
 
 
@@ -353,3 +379,4 @@ MainStore.store(name="v2", node=builds(BedlamDatasetV2), group=group_name)
 MainStore.store(name="v2_random1024", node=builds(BedlamDatasetV2, random1024=True), group=group_name)
 MainStore.store(name="v2_with_image", node=builds(BedlamDatasetV2, load_image=True), group=group_name)
 MainStore.store(name="v2_with_image_0-1", node=builds(BedlamDatasetV2, load_image=True, load_indices=[0, -1]), group=group_name)
+MainStore.store(name="v2_with_tvec", node=builds(BedlamDatasetV2, use_tvec=True), group=group_name)

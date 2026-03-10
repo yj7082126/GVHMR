@@ -9,17 +9,25 @@ from .cam_traj_utils_v2 import CameraAugmenterV20
 from hmr4d.utils.geo.hmr_cam import create_camera_sensor
 from hmr4d.utils.geo.hmr_global import get_c_rootparam, get_R_c2gv
 from hmr4d.utils.net_utils import get_valid_mask, repeat_to_max_len, repeat_to_max_len_dict
-from hmr4d.utils.geo_transform import compute_cam_angvel, apply_T_on_points, project_p2d, cvt_p2d_from_i_to_c
+from hmr4d.utils.geo_transform import (
+    compute_cam_angvel,
+    compute_cam_tvel,
+    normalize_T_w2c,
+    apply_T_on_points,
+    project_p2d,
+    cvt_p2d_from_i_to_c,
+)
 
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines, convert_motion_as_line_mesh
 from hmr4d.utils.smplx_utils import make_smplx
 
 
 class BaseDataset(Dataset):
-    def __init__(self, cam_augmentation, limit_size=None, width=1000, height=1000, f_fullframe=43.3):
+    def __init__(self, cam_augmentation, limit_size=None, width=1000, height=1000, f_fullframe=43.3, use_tvec=False):
         super().__init__()
         self.cam_augmentation = cam_augmentation
         self.limit_size = limit_size
+        self.use_tvec = use_tvec
         self.smplx = make_smplx("supermotion")
         self.smplx_lite = make_smplx("supermotion_smpl24")
         self.width = width
@@ -159,7 +167,21 @@ class BaseDataset(Dataset):
 
         # Image
         K_fullimg = K_fullimg.repeat(length, 1, 1)  # (F, 3, 3)
-        cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])  # (F, 6)
+        normed_T_w2c = normalize_T_w2c(T_w2c)
+        if self.use_tvec:
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+
+            cam_angvel = compute_cam_angvel(normed_T_w2c[:, :3, :3])  # (F, 6)
+            cam_tvel = compute_cam_tvel(normed_T_w2c[:, :3, 3])  # (F, 3)
+            noisy_cam_tvel = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])  # (F, 3)
+        else:
+            cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])  # (F, 6)
+            cam_tvel = None
+            noisy_cam_tvel = None
 
         # Returns: do not forget to make it batchable! (last lines)
         # NOTE: bbx_xys and f_imgseq will be added later
@@ -178,6 +200,8 @@ class BaseDataset(Dataset):
             "f_dinov3_frame": None,  # (N,) or None
             "kp2d": torch.zeros(length, 17, 3),  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
+            "cam_tvel": cam_tvel,  # (F, 3)
+            "noisy_cam_tvel": noisy_cam_tvel,  # (F, 3)
             "mask": {
                 "valid": get_valid_mask(length, length),
                 "vitpose": False,
@@ -194,6 +218,8 @@ class BaseDataset(Dataset):
         return_data["R_c2gv"] = repeat_to_max_len(return_data["R_c2gv"], max_len)
         return_data["K_fullimg"] = repeat_to_max_len(return_data["K_fullimg"], max_len)
         return_data["cam_angvel"] = repeat_to_max_len(return_data["cam_angvel"], max_len)
+        return_data["cam_tvel"] = repeat_to_max_len(return_data["cam_tvel"], max_len)
+        return_data["noisy_cam_tvel"] = repeat_to_max_len(return_data["noisy_cam_tvel"], max_len)
         return return_data
 
     def __getitem__(self, idx):

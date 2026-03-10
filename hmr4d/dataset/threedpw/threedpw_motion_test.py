@@ -6,7 +6,7 @@ import cv2
 
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
-from hmr4d.utils.geo_transform import compute_cam_angvel
+from hmr4d.utils.geo_transform import compute_cam_angvel, compute_cam_tvel, normalize_T_w2c
 from hmr4d.utils.geo.hmr_cam import estimate_K, resize_K
 from hmr4d.utils.geo.flip_utils import flip_kp2d_coco17
 from hmr4d.network.hmr2.utils.preproc import crop_and_resize
@@ -18,7 +18,16 @@ VID_HARD = []
 
 
 class ThreedpwSmplFullSeqDataset(data.Dataset):
-    def __init__(self, flip_test=False, skip_invalid=False, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles", load_indices=[0]):
+    def __init__(
+        self,
+        flip_test=False,
+        skip_invalid=False,
+        load_image=False,
+        image_crop_size=512,
+        image_root="inputs/3DPW/origin/imageFiles",
+        load_indices=[0],
+        use_tvec=False,
+    ):
         super().__init__()
         self.dataset_name = "3DPW"
         self.skip_invalid = skip_invalid
@@ -26,6 +35,7 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
         self.image_root = Path(image_root)
+        self.use_tvec = use_tvec
         Log.info(f"[{self.dataset_name}] Full sequence")
 
         # Load evaluation protocol from WHAM labels
@@ -108,8 +118,29 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
         # Preprocessed:  bbx, kp2d, image as feature
         bbx_xys = self.vid2bbx[vid]["bbx_xys"]  # (F, 3)
         kp2d = self.vid2kp2d[vid]  # (F, 17, 3)
-        cam_angvel = compute_cam_angvel(data["T_w2c"][:, :3, :3])  # (L, 6)
-        data.update({"bbx_xys": bbx_xys, "kp2d": kp2d, "cam_angvel": cam_angvel})
+        if self.use_tvec:
+            normed_T_w2c = normalize_T_w2c(data["T_w2c"])
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+            cam_angvel = compute_cam_angvel(normed_T_w2c[:, :3, :3])  # (L, 6)
+            cam_tvel = compute_cam_tvel(normed_T_w2c[:, :3, 3])  # (L, 3)
+            noisy_cam_tvel = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])  # (L, 3)
+        else:
+            cam_angvel = compute_cam_angvel(data["T_w2c"][:, :3, :3])  # (L, 6)
+            cam_tvel = None
+            noisy_cam_tvel = None
+        data.update(
+            {
+                "bbx_xys": bbx_xys,
+                "kp2d": kp2d,
+                "cam_angvel": cam_angvel,
+                "cam_tvel": cam_tvel,
+                "noisy_cam_tvel": noisy_cam_tvel,
+            }
+        )
 
         imgfeat_dir = self.threedpw_dir / "imgfeats/3dpw_test"
         f_img_dict = torch.load(imgfeat_dir / f"{vid}.pt", weights_only=True)
@@ -173,6 +204,10 @@ class ThreedpwSmplFullSeqDataset(data.Dataset):
             data["bbx_xys"] = data["bbx_xys"][mask].clone()
             data["kp2d"] = data["kp2d"][mask].clone()
             data["cam_angvel"] = data["cam_angvel"][mask].clone()
+            if data["cam_tvel"] is not None:
+                data["cam_tvel"] = data["cam_tvel"][mask].clone()
+            if data["noisy_cam_tvel"] is not None:
+                data["noisy_cam_tvel"] = data["noisy_cam_tvel"][mask].clone()
             data["f_imgseq"] = data["f_imgseq"][mask].clone()
             data["flip_test"] = {k: v[mask].clone() for k, v in data["flip_test"].items()}
 
@@ -203,5 +238,10 @@ MainStore.store(
 MainStore.store(
     name="with_image_0-1",
     node=builds(ThreedpwSmplFullSeqDataset, flip_test=False, load_image=True, load_indices=[0, -1]),
+    group="test_datasets/3dpw",
+)
+MainStore.store(
+    name="with_tvec",
+    node=builds(ThreedpwSmplFullSeqDataset, flip_test=False, use_tvec=True),
     group="test_datasets/3dpw",
 )

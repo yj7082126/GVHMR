@@ -6,7 +6,7 @@ import cv2
 
 from hmr4d.utils.pylogger import Log
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
-from hmr4d.utils.geo_transform import compute_cam_angvel
+from hmr4d.utils.geo_transform import compute_cam_angvel, compute_cam_tvel, normalize_T_w2c
 from hmr4d.utils.geo.hmr_cam import estimate_K, resize_K
 from hmr4d.utils.geo.flip_utils import flip_kp2d_coco17
 from hmr4d.dataset.imgfeat_motion.base_dataset import ImgfeatMotionDatasetBase
@@ -20,7 +20,14 @@ from hmr4d.configs import MainStore, builds
 
 
 class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
-    def __init__(self, load_image=False, image_crop_size=512, image_root="inputs/3DPW/origin/imageFiles", load_indices=[0]):
+    def __init__(
+        self,
+        load_image=False,
+        image_crop_size=512,
+        image_root="inputs/3DPW/origin/imageFiles",
+        load_indices=[0],
+        use_tvec=False,
+    ):
         # Path
         self.hmr4d_support_dir = Path("inputs/3DPW/hmr4d_support")
         self.image_root = Path(image_root)
@@ -28,6 +35,7 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         self.load_image = load_image
         self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
+        self.use_tvec = use_tvec
 
         # Setting
         self.min_motion_frames = 60
@@ -149,7 +157,22 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         smpl_params_c = data["smplx_params_incam"]
         smpl_params_w_zero = {k: torch.zeros_like(v) for k, v in smpl_params_c.items()}
         K_fullimg = data["K_fullimg"][None].repeat(length, 1, 1)
-        cam_angvel = compute_cam_angvel(data["T_w2c"][:, :3, :3])
+        T_w2c = data["T_w2c"]
+        normed_T_w2c = normalize_T_w2c(T_w2c)
+        if self.use_tvec:
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+
+            cam_angvel = compute_cam_angvel(normed_T_w2c[:, :3, :3])
+            cam_tvel = compute_cam_tvel(normed_T_w2c[:, :3, 3])
+            noisy_cam_tvel = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])
+        else:
+            cam_angvel = compute_cam_angvel(T_w2c[:, :3, :3])
+            cam_tvel = None
+            noisy_cam_tvel = None
 
         max_len = self.max_motion_frames
         return_data = {
@@ -168,6 +191,8 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
             "f_dinov3_frame": data["f_dinov3_frame"],  # (N,) or None
             "kp2d": data["kp2d"],  # (F, 17, 3)
             "cam_angvel": cam_angvel,  # (F, 6)
+            "cam_tvel": cam_tvel,  # (F, 3)
+            "noisy_cam_tvel": noisy_cam_tvel,  # (F, 3)
             "mask": {
                 "valid": get_valid_mask(max_len, length),
                 "vitpose": False,
@@ -188,6 +213,8 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
         return_data["f_imgseq"] = repeat_to_max_len(return_data["f_imgseq"], max_len)
         return_data["kp2d"] = repeat_to_max_len(return_data["kp2d"], max_len)
         return_data["cam_angvel"] = repeat_to_max_len(return_data["cam_angvel"], max_len)
+        return_data["cam_tvel"] = repeat_to_max_len(return_data["cam_tvel"], max_len)
+        return_data["noisy_cam_tvel"] = repeat_to_max_len(return_data["noisy_cam_tvel"], max_len)
 
         return return_data
 
@@ -196,3 +223,4 @@ class ThreedpwSmplDataset(ImgfeatMotionDatasetBase):
 MainStore.store(name="v1", node=builds(ThreedpwSmplDataset), group="train_datasets/imgfeat_3dpw")
 MainStore.store(name="v1_with_image", node=builds(ThreedpwSmplDataset, load_image=True), group="train_datasets/imgfeat_3dpw")
 MainStore.store(name="v1_with_image_0-1", node=builds(ThreedpwSmplDataset, load_image=True, load_indices=[0, -1]), group="train_datasets/imgfeat_3dpw")
+MainStore.store(name="v1_with_tvec", node=builds(ThreedpwSmplDataset, use_tvec=True), group="train_datasets/imgfeat_3dpw")

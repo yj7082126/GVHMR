@@ -104,6 +104,8 @@ def length_to_mask(lengths, max_len):
 
 def repeat_to_max_len(x, max_len, dim=0):
     """Repeat last frame to max_len along dim"""
+    if x is None:
+        return None
     assert isinstance(x, torch.Tensor)
     if x.shape[dim] == max_len:
         return x

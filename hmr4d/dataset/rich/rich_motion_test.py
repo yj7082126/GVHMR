@@ -10,7 +10,7 @@ from .rich_utils import (
     parse_seqname_info,
     get_cam_key_wham_vid,
 )
-from hmr4d.utils.geo_transform import apply_T_on_points, transform_mat, compute_cam_angvel
+from hmr4d.utils.geo_transform import apply_T_on_points, transform_mat, compute_cam_angvel, compute_cam_tvel, normalize_T_w2c
 from hmr4d.utils.wis3d_utils import make_wis3d, add_motion_as_lines
 from hmr4d.utils.smplx_utils import make_smplx
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle
@@ -33,7 +33,7 @@ VID_PRESETS = {
 
 
 class RichSmplFullSeqDataset(data.Dataset):
-    def __init__(self, vid_presets=None):
+    def __init__(self, vid_presets=None, use_tvec=False):
         """
         Args:
             vid_presets is a key in VID_PRESETS
@@ -41,6 +41,7 @@ class RichSmplFullSeqDataset(data.Dataset):
         super().__init__()
         self.dataset_name = "RICH"
         self.dataset_id = "RICH"
+        self.use_tvec = use_tvec
         Log.info(f"[{self.dataset_name}] Full sequence, Test")
         tic = Log.time()
 
@@ -139,8 +140,22 @@ class RichSmplFullSeqDataset(data.Dataset):
         # process img feature with xys
         length = data["length"]
         f_imgseq = data["f_imgseq"]  # (F, 1024)
-        R_w2c = data["T_w2c"][:3, :3].repeat(length, 1, 1)  # (L, 4, 4)
-        cam_angvel = compute_cam_angvel(R_w2c)  # (L, 6)
+        T_w2c = data["T_w2c"][None].repeat(length, 1, 1)
+        if self.use_tvec:
+            normed_T_w2c = normalize_T_w2c(T_w2c)
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+            cam_angvel = compute_cam_angvel(normed_T_w2c[:, :3, :3])  # (L, 6)
+            cam_tvel = compute_cam_tvel(normed_T_w2c[:, :3, 3])  # (L, 3)
+            noisy_cam_tvel = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])  # (L, 3)
+        else:
+            R_w2c = data["T_w2c"][:3, :3].repeat(length, 1, 1)
+            cam_angvel = compute_cam_angvel(R_w2c)  # (L, 6)
+            cam_tvel = None
+            noisy_cam_tvel = None
 
         # Return
         data = {
@@ -152,6 +167,8 @@ class RichSmplFullSeqDataset(data.Dataset):
             "length": length,
             "f_imgseq": f_imgseq,
             "cam_angvel": cam_angvel,
+            "cam_tvel": cam_tvel,
+            "noisy_cam_tvel": noisy_cam_tvel,
             "bbx_xys": data["bbx_xys"],  # (F, 3)
             "K_fullimg": data["K"][None].expand(length, -1, -1),  # (F, 3, 3)
             "kp2d": data["kp2d"],  # (F, 17, 3)
@@ -183,3 +200,4 @@ base_node = builds(RichSmplFullSeqDataset, vid_presets=None, populate_full_signa
 MainStore.store(name="all", node=base_node, group=group_name)
 MainStore.store(name="easy_to_hard", node=base_node(vid_presets="easytohard"), group=group_name)
 MainStore.store(name="postproc", node=base_node(vid_presets="postproc"), group=group_name)
+MainStore.store(name="with_tvec", node=base_node(use_tvec=True), group=group_name)

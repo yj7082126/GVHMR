@@ -6,16 +6,16 @@ defaults:
     - override /optimizer: adamw_2e-4
     - override /scheduler_cfg: epoch_half_200_350
     - override /train_datasets:
-        - pure_motion_amass/v11
-        - imgfeat_bedlam/v2
-        - imgfeat_h36m/v1
-        - imgfeat_3dpw/v1
-        - synth_uni3c_aligned/v1
+        - pure_motion_amass/v11_with_tvec
+        - imgfeat_bedlam/v2_with_tvec
+        - imgfeat_h36m/v1_with_tvec
+        - imgfeat_3dpw/v1_with_tvec
+        - synth_uni3c_aligned/v1_with_tvec
     - override /test_datasets:
-        - emdb1/v1_fliptest
-        - emdb2/v1_fliptest
-        - rich/all
-        - 3dpw/fliptest
+        - emdb1/v1_with_tvec
+        - emdb2/v1_with_tvec
+        - rich/with_tvec
+        - 3dpw/with_tvec
     - override /callbacks:
         - simple_ckpt_saver/every10e_top100
         - prog_bar/prog_reporter_every0.1
@@ -25,10 +25,10 @@ defaults:
         - metric_emdb2
         - metric_rich
         - metric_3dpw
-    - override /network: gvhmr/relative_transformer_ca
+    - override /network: gvhmr/relative_transformer
 
-exp_name_base: crossattn
-exp_name_var: "_hmr_v2"
+exp_name_base: tmp
+exp_name_var: "_tmp"
 exp_name: ${exp_name_base}${exp_name_var}
 data_name: mocap_mixed_v2_ca
 

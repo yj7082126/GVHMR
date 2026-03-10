@@ -7,6 +7,7 @@ from hmr4d.utils.pylogger import Log
 from hmr4d.configs import MainStore, builds
 from hmr4d.dataset.imgfeat_motion.base_dataset import ImgfeatMotionDatasetBase
 from hmr4d.utils.net_utils import repeat_to_max_len, repeat_to_max_len_dict
+from hmr4d.utils.geo_transform import compute_cam_angvel, compute_cam_tvel, normalize_T_w2c
 from hmr4d.network.hmr2.utils.preproc import crop_and_resize
 
 class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
@@ -17,6 +18,7 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         load_image=True,
         image_crop_size=512,
         load_indices=[0],
+        use_tvec=False,
     ):
         self.root = Path("inputs/uni3c_aligned")
         self.max_motion_frames = 120
@@ -26,6 +28,7 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         self.load_image = load_image
         self.load_indices = [int(i) for i in load_indices]
         self.image_crop_size = image_crop_size
+        self.use_tvec = use_tvec
         
         super().__init__()
         
@@ -103,6 +106,20 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
             data["mask"] = {}
         data["mask"]["image"] = image is not None
         data["mask"]["f_dinov3_imgseq"] = False
+
+        if self.use_tvec and ("T_w2c" in data):
+            normed_T_w2c = normalize_T_w2c(data["T_w2c"])
+            noisy_normed_T_w2c = normed_T_w2c.clone()
+            noisy_t_w2c = noisy_normed_T_w2c[:, :3, 3]
+            rand_scale = min(max(0.1, torch.randn(1) + 3), 10)
+            noisy_t_w2c = noisy_t_w2c / rand_scale
+            noisy_normed_T_w2c[:, :3, 3] = noisy_t_w2c
+            data["cam_angvel"] = compute_cam_angvel(normed_T_w2c[:, :3, :3])
+            data["cam_tvel"] = compute_cam_tvel(normed_T_w2c[:, :3, 3])
+            data["noisy_cam_tvel"] = compute_cam_tvel(noisy_normed_T_w2c[:, :3, 3])
+        else:
+            data["cam_tvel"] = None
+            data["noisy_cam_tvel"] = None
         
         data["smpl_params_c"] = repeat_to_max_len_dict(data["smpl_params_c"], max_len)
         data["smpl_params_w"] = repeat_to_max_len_dict(data["smpl_params_w"], max_len)
@@ -112,6 +129,8 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
         data["f_imgseq"] = repeat_to_max_len(data["f_imgseq"], max_len)
         data["kp2d"] = repeat_to_max_len(data["kp2d"], max_len)
         data["cam_angvel"] = repeat_to_max_len(data["cam_angvel"], max_len)
+        data["cam_tvel"] = repeat_to_max_len(data["cam_tvel"], max_len)
+        data["noisy_cam_tvel"] = repeat_to_max_len(data["noisy_cam_tvel"], max_len)
         if "_dinov3_mid" in data:
             del data["_dinov3_mid"]
         return data
@@ -119,3 +138,4 @@ class Uni3CAlignedDatasetV1(ImgfeatMotionDatasetBase):
 group_name = "train_datasets/synth_uni3c_aligned"
 MainStore.store(name="v1", node=builds(Uni3CAlignedDatasetV1), group=group_name)
 MainStore.store(name="v1_0-1", node=builds(Uni3CAlignedDatasetV1, load_image=True, load_indices=[0, -1]), group=group_name)
+MainStore.store(name="v1_with_tvec", node=builds(Uni3CAlignedDatasetV1, use_tvec=True), group=group_name)
